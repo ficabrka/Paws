@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "Paws",
+    "slug": "paws",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0C0B10",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.getpawsapp.paws"
+    },
+    "android": {
+      "package": "com.getpawsapp.paws",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#FF6B60",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "android.permission.INTERNET"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "backgroundColor": "#0C0B10"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Paws needs access to your photos so you can post your pet.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ]
+    ],
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
