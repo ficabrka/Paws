@@ -9,7 +9,8 @@ const HTML = `<!DOCTYPE html><html><head><meta name="viewport" content="width=de
 let model=null, loading=null;
 function send(o){ window.ReactNativeWebView.postMessage(JSON.stringify(o)); }
 function load(){
-  if(!loading){ loading = tf.loadGraphModel("https://tfhub.dev/google/tfjs-model/imagenet/mobilenet_v2_100_224/classification/3/default/1",{fromTFHub:true}).then(m=>model=m); }
+  // CPU backend: phone GPUs (WebGL, 16-bit floats) gave wrong answers, e.g. a dog read as a turtle.
+  if(!loading){ loading = tf.setBackend("cpu").then(()=>tf.ready()).then(()=>tf.loadGraphModel("https://tfhub.dev/google/tfjs-model/imagenet/mobilenet_v2_100_224/classification/3/default/1",{fromTFHub:true})).then(m=>model=m).catch(e=>{loading=null; throw e;}); }
   return loading;
 }
 async function classify(id, b64){
@@ -21,8 +22,9 @@ async function classify(id, b64){
         const probs=tf.tidy(()=>{const t=tf.browser.fromPixels(img).resizeBilinear([224,224]).toFloat().div(255).expandDims(0);return tf.softmax(model.predict(t)).dataSync();});
         let animalSum=0,best=-1,bestP=0,top=-1,topP=0;
         for(let k=1;k<probs.length;k++){const p=probs[k]; if(p>topP){topP=p;top=k;} if(k<=398){animalSum+=p; if(p>bestP){bestP=p;best=k;}}}
-        const animal=animalSum>=0.35||bestP>=0.15;
-        send({id, ok:true, animal, cls:(animal?best:top)-1, conf:animal?Math.max(bestP,Math.min(animalSum,.99)):topP});
+        // Strict: the single most likely thing must be an animal AND animals must cover at least half of the guess.
+        const animal = top>=1 && top<=398 && animalSum>=0.5;
+        send({id, ok:true, animal, cls:(animal?best:top)-1, conf:animal?Math.min(animalSum,.999):topP, animalSum});
       }catch(e){ send({id, ok:false, error:String(e)}); }
     };
     img.onerror=()=>send({id, ok:false, error:"image"});

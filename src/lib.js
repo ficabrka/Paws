@@ -62,3 +62,38 @@ export function catOfClass(c) {
   if ((c >= 7 && c <= 24) || (c >= 80 && c <= 100) || (c >= 127 && c <= 146)) return 'ptice';
   return 'ostali';
 }
+
+/* ---------------- music (Deezer 30-second previews) ---------------- */
+// Deezer preview links expire, so only the track id is stored and a fresh link is fetched before playing.
+import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
+let player = null;
+let token = 0;
+export async function searchSongs(q) {
+  const r = await fetch(`https://api.deezer.com/search?q=${encodeURIComponent(q)}&limit=25`);
+  const j = await r.json();
+  return (j.data || []).filter((x) => x.preview && x.readable !== false).map((x) => ({
+    id: x.id, title: x.title_short || x.title, artist: x.artist?.name || '', cover: x.album?.cover_medium || x.album?.cover || null, preview: x.preview,
+  }));
+}
+export async function playSong(id, url) {
+  const my = ++token;
+  try {
+    if (!player) {
+      player = createAudioPlayer(null);
+      setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: false }).catch(() => {});
+    }
+    let u = url;
+    if (!u) { const r = await fetch(`https://api.deezer.com/track/${id}`); const j = await r.json(); u = j.preview; }
+    if (!u || my !== token) return false;
+    player.replace({ uri: u });
+    player.loop = true;
+    player.volume = 1;
+    player.play();
+    return true;
+  } catch (e) { return false; }
+}
+export function stopSong() {
+  token++;
+  try { if (player) player.pause(); } catch (e) {}
+}
+export function monthStartISO() { const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString(); }

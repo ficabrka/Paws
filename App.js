@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, Modal, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View, useWindowDimensions,
+  ActivityIndicator, Alert, Animated, FlatList, Linking, Modal, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View, useWindowDimensions,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,15 +12,32 @@ import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { decode } from 'base64-arraybuffer';
 import Detector from './src/Detector';
+import INTRO from './src/introFrames';
 import {
   supabase, photoUrl, SHARE_BASE, I18N, LANG_NAMES, LANG_FLAGS, deviceLang, deviceRegion, makeT, fmt,
   CATS, COUNTRIES, flagOf, countryName, LEVELS, levelOf, agoText, catOfClass,
+  searchSongs, playSong, stopSong, monthStartISO,
 } from './src/lib';
 
 const C = { bg: '#0C0B10', bg2: '#131218', card: '#18171F', line: 'rgba(255,255,255,0.08)', txt: '#F5F3F8', mut: '#9B97A8', g1: '#FF4F7B', g2: '#FF9248', ok: '#3DDC97' };
 const GRAD = [C.g1, C.g2];
 const PAGE = 15;
-const PET_FIELDS = 'id,owner_id,name,category,city,country_code,caption,photo_path,paws_count,featured_until,credit,created_at';
+const PET_FIELDS = 'id,owner_id,name,category,city,country_code,caption,photo_path,paws_count,featured_until,credit,created_at,contact_phone,contact_apps,song_id,song_title,song_artist,song_cover';
+const PET_FIELDS_OLD = 'id,owner_id,name,category,city,country_code,caption,photo_path,paws_count,featured_until,credit,created_at';
+const FEET = require('./assets/feet.png');
+const PHONE_RE = /^\+?[0-9 ()./-]{6,22}$/;
+
+// Select pets; if the v2 columns are not in the database yet, fall back to the old column list.
+async function selectPets(build) {
+  let r = await build(supabase.from('pets').select(PET_FIELDS));
+  if (r.error && /column|schema/i.test(r.error.message || '')) r = await build(supabase.from('pets').select(PET_FIELDS_OLD));
+  return r;
+}
+
+/* Two elephant footprints: the Paws mark, used everywhere instead of the dog-paw emoji. */
+function Feet({ size = 22, color = '#fff', style }) {
+  return <Image source={FEET} style={[{ width: size, height: size }, style]} tintColor={color} contentFit="contain" />;
+}
 
 /* ======================================================================= */
 export default function App() {
@@ -39,6 +56,7 @@ function Root() {
   const [uid, setUid] = useState(null);
   const [authErr, setAuthErr] = useState(null);
   const [tab, setTab] = useState('feed');
+  const [intro, setIntro] = useState(true);
   const [welcome, setWelcome] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -65,14 +83,14 @@ function Root() {
     } catch (e) { setAuthErr(String(e?.message || e)); }
   }
   const chooseLang = async (l) => { setLang(l); setLangOpen(false); try { await AsyncStorage.setItem('paws-lang', l); } catch (e) {} };
+  const goTab = (k) => { if (k !== 'feed') stopSong(); setTab(k); };
 
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
       <Detector ref={detector} />
-      {/* header */}
       <View style={s.header}>
         <View style={s.logoRow}>
-          <LinearGradient colors={GRAD} style={s.logoMark}><Text style={{ fontSize: 16 }}>🐾</Text></LinearGradient>
+          <LinearGradient colors={GRAD} style={s.logoMark}><Feet size={22} /></LinearGradient>
           <Text style={s.logoTxt}>Paws</Text>
         </View>
         <Pressable onPress={() => setLangOpen(true)} style={s.langBtn}><Text style={s.langTxt}>{LANG_FLAGS[lang]} {lang.toUpperCase()}</Text></Pressable>
@@ -87,24 +105,26 @@ function Root() {
               <Btn label={t('retry')} onPress={signIn} style={{ marginTop: 18 }} />
             </>) : <ActivityIndicator color={C.g1} size="large" />}
           </View>
-        ) : tab === 'feed' ? <Feed t={t} lang={lang} uid={uid} refreshKey={refreshKey} />
-          : tab === 'top' ? <Top t={t} lang={lang} />
+        ) : tab === 'feed' ? <Feed t={t} lang={lang} uid={uid} refreshKey={refreshKey} paused={intro || welcome} />
+          : tab === 'top' ? <Top t={t} lang={lang} uid={uid} />
           : tab === 'post' ? <Post t={t} lang={lang} uid={uid} detector={detector} onDone={() => { setRefreshKey((k) => k + 1); setTab('mine'); }} />
           : <Mine t={t} lang={lang} uid={uid} refreshKey={refreshKey} onPost={() => setTab('post')} />}
       </View>
 
-      {/* tab bar */}
       <View style={[s.tabbar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
-        {[['feed', '🏠', t('tab_feed')], ['top', '🏆', t('tab_top')], ['post', '+', t('tab_post')], ['mine', '🐾', t('tab_mine')]].map(([k, ic, lb]) => (
-          <Pressable key={k} onPress={() => setTab(k)} style={s.tabBtn}>
+        {[['feed', '🏠', t('tab_feed')], ['top', '🏆', t('tab_top')], ['post', '+', t('tab_post')], ['mine', 'feet', t('tab_mine')]].map(([k, ic, lb]) => (
+          <Pressable key={k} onPress={() => goTab(k)} style={s.tabBtn}>
             {k === 'post'
               ? <LinearGradient colors={GRAD} style={s.plus}><Text style={s.plusTxt}>+</Text></LinearGradient>
-              : <><Text style={[s.tabIc, tab !== k && { opacity: 0.45 }]}>{ic}</Text><Text style={[s.tabLb, tab === k && { color: C.txt }]}>{lb}</Text></>}
+              : <>
+                {ic === 'feet' ? <Feet size={24} color={tab === k ? '#fff' : 'rgba(255,255,255,0.45)'} style={{ marginVertical: 1 }} />
+                  : <Text style={[s.tabIc, tab !== k && { opacity: 0.45 }]}>{ic}</Text>}
+                <Text style={[s.tabLb, tab === k && { color: C.txt }]}>{lb}</Text>
+              </>}
           </Pressable>
         ))}
       </View>
 
-      {/* language picker */}
       <Modal visible={langOpen} transparent animationType="slide" onRequestClose={() => setLangOpen(false)}>
         <Pressable style={s.shade} onPress={() => setLangOpen(false)}>
           <View style={[s.sheet, { paddingBottom: insets.bottom + 16 }]}>
@@ -120,25 +140,90 @@ function Root() {
         </Pressable>
       </Modal>
 
-      {/* welcome with the elephant */}
-      <Modal visible={welcome} animationType="fade" onRequestClose={() => setWelcome(false)}>
+      {/* first start only: short explanation */}
+      <Modal visible={welcome && !intro} animationType="fade" onRequestClose={() => setWelcome(false)}>
         <View style={[s.welcome, { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 24 }]}>
           <Image source={require('./assets/elephant.jpg')} style={s.welcomeImg} contentFit="cover" />
           <LinearGradient colors={['transparent', C.bg]} style={s.welcomeFade} />
           <View style={{ paddingHorizontal: 24 }}>
             <Text style={s.welcomeH}>{t('h1a')} {t('h1b')}</Text>
             <Text style={[s.welcomeH, { color: C.g2 }]}>{t('h1c')}</Text>
-            <Text style={[s.mutTxt, { fontSize: 16, lineHeight: 23, marginTop: 12 }]}>{t('welcome')}</Text>
+            <Text style={[s.mutTxt, { fontSize: 16, lineHeight: 23, marginTop: 12, textAlign: 'left' }]}>{t('welcome')}</Text>
             <Btn label={t('start')} onPress={async () => { setWelcome(false); try { await AsyncStorage.setItem('paws-welcomed', '1'); } catch (e) {} }} style={{ marginTop: 24 }} />
           </View>
         </View>
       </Modal>
+
+      {/* every start: the elephant turns its head */}
+      {intro && <Intro t={t} onDone={() => setIntro(false)} />}
     </View>
   );
 }
 
+/* ============================== INTRO ============================== */
+function Intro({ t, onDone }) {
+  const { width } = useWindowDimensions();
+  const [i, setI] = useState(Math.floor(INTRO.length / 2));
+  const fade = useRef(new Animated.Value(1)).current;
+  const done = useRef(false);
+  const finish = useCallback(() => {
+    if (done.current) return; done.current = true;
+    Animated.timing(fade, { toValue: 0, duration: 350, useNativeDriver: true }).start(() => onDone());
+  }, [fade, onDone]);
+  useEffect(() => {
+    const t0 = Date.now();
+    const id = setInterval(() => {
+      const el = (Date.now() - t0) / 1000;
+      // look left, right, back to the middle
+      const x = Math.sin(el * Math.PI * 1.1) * Math.exp(-el * 0.25);
+      setI(Math.max(0, Math.min(INTRO.length - 1, Math.round((x + 1) / 2 * (INTRO.length - 1)))));
+      if (el > 3.2) { clearInterval(id); finish(); }
+    }, 40);
+    return () => clearInterval(id);
+  }, [finish]);
+  const h = Math.round(width * 412 / 720);
+  return (
+    <Animated.View style={[StyleSheet.absoluteFill, s.intro, { opacity: fade }]}>
+      <Pressable style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]} onPress={finish}>
+        <View style={{ width, height: h }}>
+          {INTRO.map((src, k) => (
+            <Image key={k} source={src} style={[StyleSheet.absoluteFill, { opacity: k === i ? 1 : 0 }]} contentFit="cover" />
+          ))}
+          <LinearGradient colors={[C.bg, 'transparent', 'transparent', C.bg]} locations={[0, 0.18, 0.8, 1]} style={StyleSheet.absoluteFill} />
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 18 }}>
+          <LinearGradient colors={GRAD} style={[s.logoMark, { width: 52, height: 52, borderRadius: 16 }]}><Feet size={36} /></LinearGradient>
+          <Text style={[s.logoTxt, { fontSize: 40 }]}>Paws</Text>
+        </View>
+        <Text style={[s.mutTxt, { marginTop: 28, fontSize: 12 }]}>{t('tap_skip')}</Text>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
+/* ============================== shared pet actions ============================== */
+const shareText = (t, p) => `${t('share_msg', { name: p.name })} ${SHARE_BASE}${p.id}`;
+function contactOwner(t, p) {
+  const num = (p.contact_phone || '').replace(/[^0-9+]/g, '');
+  if (!num) return;
+  const digits = num.replace(/\D/g, '');
+  const intl = num.startsWith('+') ? digits : digits;
+  const open = (url) => Linking.openURL(url).catch(() => Alert.alert('Paws', t('no_app')));
+  const apps = (p.contact_apps && p.contact_apps.length ? p.contact_apps : ['call']);
+  const btn = {
+    call: { text: t('c_call'), onPress: () => open(`tel:${num}`) },
+    sms: { text: t('c_sms'), onPress: () => open(`sms:${num}`) },
+    whatsapp: { text: t('c_whatsapp'), onPress: () => open(`https://wa.me/${intl}`) },
+    viber: { text: t('c_viber'), onPress: () => open(`viber://chat?number=%2B${intl}`) },
+  };
+  Alert.alert(t('contact_q'), `${p.name} · ${p.contact_phone}`, [...apps.filter((a) => btn[a]).map((a) => btn[a]), { text: t('cancel'), style: 'cancel' }]);
+}
+async function setPaw(uid, p, on) {
+  return on ? supabase.from('paws').insert({ pet_id: p.id, user_id: uid }) : supabase.from('paws').delete().eq('pet_id', p.id).eq('user_id', uid);
+}
+
 /* ============================== FEED ============================== */
-function Feed({ t, lang, uid, refreshKey }) {
+function Feed({ t, lang, uid, refreshKey, paused }) {
   const [cat, setCat] = useState('svi');
   const [items, setItems] = useState([]);
   const [liked, setLiked] = useState(new Set());
@@ -148,21 +233,31 @@ function Feed({ t, lang, uid, refreshKey }) {
   const [h, setH] = useState(0);
   const lastTap = useRef({ id: null, t: 0 });
   const [burst, setBurst] = useState(null);
+  const [active, setActive] = useState(null);
+  const [sound, setSound] = useState(true);
+
+  useEffect(() => { AsyncStorage.getItem('paws-sound').then((v) => { if (v === '0') setSound(false); }).catch(() => {}); }, []);
+  const onViewable = useRef(({ viewableItems }) => { const v = viewableItems.find((x) => x.isViewable); if (v) setActive(v.item.id); }).current;
+  const viewCfg = useRef({ itemVisiblePercentThreshold: 60 }).current;
+
+  // play the song of the photo on screen
+  const activePet = items.find((p) => p.id === active);
+  useEffect(() => {
+    if (!paused && sound && activePet?.song_id) playSong(activePet.song_id); else stopSong();
+  }, [active, activePet?.song_id, sound, paused]); // eslint-disable-line
+  useEffect(() => () => stopSong(), []);
+  const toggleSound = () => { const v = !sound; setSound(v); AsyncStorage.setItem('paws-sound', v ? '1' : '0').catch(() => {}); };
 
   const load = useCallback(async (reset) => {
     if (!reset && (loading || end)) return;
     setLoading(true); setErr(null);
     try {
       const from = reset ? 0 : items.length;
-      let q = supabase.from('pets').select(PET_FIELDS).eq('status', 'active').order('created_at', { ascending: false }).range(from, from + PAGE - 1);
-      if (cat !== 'svi') q = q.eq('category', cat);
-      const { data, error } = await q;
+      const { data, error } = await selectPets((q) => { q = q.eq('status', 'active').order('created_at', { ascending: false }).range(from, from + PAGE - 1); return cat !== 'svi' ? q.eq('category', cat) : q; });
       if (error) throw error;
       let rows = data || [];
       if (reset) {
-        let fq = supabase.from('pets').select(PET_FIELDS).eq('status', 'active').gt('featured_until', new Date().toISOString()).limit(5);
-        if (cat !== 'svi') fq = fq.eq('category', cat);
-        const { data: feat } = await fq;
+        const { data: feat } = await selectPets((q) => { q = q.eq('status', 'active').gt('featured_until', new Date().toISOString()).limit(5); return cat !== 'svi' ? q.eq('category', cat) : q; });
         const fIds = new Set((feat || []).map((p) => p.id));
         rows = [...(feat || []).map((p) => ({ ...p, _featured: true })), ...rows.filter((p) => !fIds.has(p.id))];
       }
@@ -172,6 +267,7 @@ function Feed({ t, lang, uid, refreshKey }) {
         setLiked((prev) => { const n = new Set(reset ? [] : prev); (mine || []).forEach((m) => n.add(m.pet_id)); return n; });
       }
       setItems((prev) => (reset ? rows : [...prev, ...rows.filter((r) => !prev.some((p) => p.id === r.id))]));
+      if (reset && rows[0]) setActive(rows[0].id);
       setEnd((data || []).length < PAGE);
     } catch (e) { setErr(t('err_net')); }
     setLoading(false);
@@ -186,10 +282,8 @@ function Feed({ t, lang, uid, refreshKey }) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     setLiked((prev) => { const n = new Set(prev); has ? n.delete(p.id) : n.add(p.id); return n; });
     setItems((prev) => prev.map((x) => (x.id === p.id ? { ...x, paws_count: x.paws_count + (has ? -1 : 1) } : x)));
-    const { error } = has
-      ? await supabase.from('paws').delete().eq('pet_id', p.id).eq('user_id', uid)
-      : await supabase.from('paws').insert({ pet_id: p.id, user_id: uid });
-    if (error) { // roll back
+    const { error } = await setPaw(uid, p, !has);
+    if (error) {
       setLiked((prev) => { const n = new Set(prev); has ? n.add(p.id) : n.delete(p.id); return n; });
       setItems((prev) => prev.map((x) => (x.id === p.id ? { ...x, paws_count: x.paws_count + (has ? 1 : -1) } : x)));
     }
@@ -200,7 +294,6 @@ function Feed({ t, lang, uid, refreshKey }) {
       togglePaw(p, true); setBurst(p.id); setTimeout(() => setBurst(null), 700); lastTap.current = { id: null, t: 0 };
     } else lastTap.current = { id: p.id, t: now };
   }
-  const share = (p) => Share.share({ message: `${t('share_msg', { name: p.name })} ${SHARE_BASE}${p.id}` }).catch(() => {});
   function report(p) {
     const send = async (reason) => {
       await supabase.from('reports').insert({ pet_id: p.id, reporter_id: uid, reason });
@@ -228,9 +321,12 @@ function Feed({ t, lang, uid, refreshKey }) {
           onEndReached={() => load(false)}
           onEndReachedThreshold={2}
           windowSize={5}
+          onViewableItemsChanged={onViewable}
+          viewabilityConfig={viewCfg}
           renderItem={({ item: p }) => (
-            <Slide p={p} h={h} t={t} lang={lang} on={liked.has(p.id)} burst={burst === p.id}
-              onTap={() => onTap(p)} onPaw={() => togglePaw(p)} onShare={() => share(p)} onReport={() => report(p)} />
+            <Slide p={p} h={h} t={t} lang={lang} on={liked.has(p.id)} burst={burst === p.id} sound={sound}
+              onTap={() => onTap(p)} onPaw={() => togglePaw(p)} onShare={() => Share.share({ message: shareText(t, p) }).catch(() => {})}
+              onReport={() => report(p)} onContact={() => contactOwner(t, p)} onSound={toggleSound} />
           )}
           ListEmptyComponent={
             <View style={[s.center, { height: h }]}>
@@ -241,7 +337,6 @@ function Feed({ t, lang, uid, refreshKey }) {
           }
         />
       )}
-      {/* category chips over the feed */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.chips} contentContainerStyle={{ paddingHorizontal: 12, gap: 8 }}>
         {CATS.map(([k, e]) => (
           <Pressable key={k} onPress={() => setCat(k)} style={[s.chip, cat === k && s.chipOn]}>
@@ -253,7 +348,7 @@ function Feed({ t, lang, uid, refreshKey }) {
   );
 }
 
-function Slide({ p, h, t, lang, on, burst, onTap, onPaw, onShare, onReport }) {
+function Slide({ p, h, t, lang, on, burst, sound, onTap, onPaw, onShare, onReport, onContact, onSound }) {
   const n = p.paws_count || 0, l = levelOf(n), next = LEVELS[l + 1];
   const uri = photoUrl(p.photo_path);
   return (
@@ -262,12 +357,17 @@ function Slide({ p, h, t, lang, on, burst, onTap, onPaw, onShare, onReport }) {
       <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.35)' }]} />
       <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="contain" transition={200} />
       <LinearGradient colors={['transparent', 'rgba(0,0,0,0.85)']} style={s.fade} />
-      {burst && <Text style={s.burst}>🐾</Text>}
+      {burst && <View style={s.burst}><Feet size={130} /></View>}
       <View style={s.meta}>
         {p._featured && <View style={s.badgeFeat}><Text style={s.badgeFeatTxt}>{t('featured')}</Text></View>}
         <Text style={s.petName}>{p.name}</Text>
         <Text style={s.petPlace}>{flagOf(p.country_code)} {p.city || countryName(p.country_code, lang)} · {agoText(p.created_at, t)}</Text>
         {!!p.caption && <Text style={s.caption}>{p.caption}</Text>}
+        {!!p.song_id && (
+          <Pressable onPress={onSound} style={s.songChip}>
+            <Text style={s.songTxt} numberOfLines={1}>{sound ? '🔊' : '🔇'}  ♪ {p.song_title} · {p.song_artist}</Text>
+          </Pressable>
+        )}
         <View style={s.ms}>
           <Text style={s.msTxt}>{l >= 0 ? `${LEVELS[l][2]} ${t(LEVELS[l][1])}` : t('ms_new')}</Text>
           {next && <>
@@ -279,14 +379,20 @@ function Slide({ p, h, t, lang, on, burst, onTap, onPaw, onShare, onReport }) {
       </View>
       <View style={s.rail}>
         <Pressable onPress={onPaw} style={s.railBtn}>
-          {on ? <LinearGradient colors={GRAD} style={s.railO}><Text style={s.railIc}>🐾</Text></LinearGradient>
-            : <View style={[s.railO, s.railOff]}><Text style={s.railIc}>🐾</Text></View>}
+          {on ? <LinearGradient colors={GRAD} style={s.railO}><Feet size={30} /></LinearGradient>
+            : <View style={[s.railO, s.railOff]}><Feet size={30} /></View>}
           <Text style={s.railTxt}>{fmt(n, lang)}</Text>
         </Pressable>
         <Pressable onPress={onShare} style={s.railBtn}>
           <View style={[s.railO, s.railOff]}><Text style={s.railIc}>↗</Text></View>
           <Text style={s.railTxt}>{t('invite')}</Text>
         </Pressable>
+        {!!p.contact_phone && (
+          <Pressable onPress={onContact} style={s.railBtn}>
+            <View style={[s.railO, s.railOff]}><Text style={{ fontSize: 22 }}>📞</Text></View>
+            <Text style={s.railTxt}>{t('contact')}</Text>
+          </Pressable>
+        )}
         <Pressable onPress={onReport} style={s.railBtn}>
           <View style={[s.railO, s.railOff, { width: 40, height: 40 }]}><Text style={{ color: '#fff', fontSize: 16 }}>⋯</Text></View>
         </Pressable>
@@ -295,70 +401,354 @@ function Slide({ p, h, t, lang, on, burst, onTap, onPaw, onShare, onReport }) {
   );
 }
 
-/* ============================== TOP ============================== */
-function Top({ t, lang }) {
-  const [top, setTop] = useState(null);
-  const [winners, setWinners] = useState([]);
-  const [err, setErr] = useState(null);
-  const load = async () => {
-    setErr(null);
-    try {
-      const { data, error } = await supabase.from('pets').select(PET_FIELDS).eq('status', 'active').order('paws_count', { ascending: false }).limit(50);
-      if (error) throw error;
-      setTop(data || []);
-      const { data: w } = await supabase.from('weekly_winners').select('scope,paws,week_start,pets(' + PET_FIELDS + ')').order('week_start', { ascending: false }).limit(40);
-      const latest = w && w[0] ? w.filter((x) => x.week_start === w[0].week_start) : [];
-      const reg = deviceRegion();
-      setWinners(latest.filter((x) => x.scope === 'world' || x.scope === 'country:' + reg || x.scope.startsWith('cat:')).slice(0, 7));
-    } catch (e) { setErr(t('err_net')); }
-  };
-  useEffect(() => { load(); }, []); // eslint-disable-line
-  if (err) return <View style={s.center}><Text style={s.errTxt}>{err}</Text><Btn label={t('retry')} onPress={load} style={{ marginTop: 16 }} /></View>;
-  if (!top) return <View style={s.center}><ActivityIndicator color={C.g1} size="large" /></View>;
-  const scopeLabel = (sc) => (sc === 'world' ? '🌍 ' + t('world') : sc.startsWith('country:') ? flagOf(sc.slice(8)) + ' ' + countryName(sc.slice(8), lang) : CATS.find((c) => c[0] === sc.slice(4))?.[1] + ' ' + t('c_' + sc.slice(4)));
+/* ============================== PET VIEW (opened from Top lists) ============================== */
+function PetView({ p, t, lang, uid, onClose }) {
+  const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
+  const [on, setOn] = useState(false);
+  const [n, setN] = useState(p?.paws_count || 0);
+  const [playing, setPlaying] = useState(false);
+  useEffect(() => {
+    if (!p) return;
+    setN(p.paws_count || 0); setPlaying(false);
+    supabase.from('paws').select('pet_id').eq('pet_id', p.id).eq('user_id', uid).then(({ data }) => setOn(!!(data && data.length)));
+    return () => stopSong();
+  }, [p, uid]);
+  if (!p) return null;
+  async function paw() {
+    if (p.owner_id === uid) { Alert.alert('Paws', t('own_paw')); return; }
+    const was = on; setOn(!was); setN((x) => x + (was ? -1 : 1));
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    const { error } = await setPaw(uid, p, !was);
+    if (error) { setOn(was); setN((x) => x + (was ? 1 : -1)); }
+  }
+  const song = () => { if (playing) { stopSong(); setPlaying(false); } else { setPlaying(true); playSong(p.song_id).then((ok) => { if (!ok) setPlaying(false); }); } };
   return (
-    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
-      <LinearGradient colors={['rgba(255,79,123,0.22)', 'rgba(255,146,72,0.08)']} style={s.weekBox}>
-        <Text style={s.weekH}>{t('week_b')}</Text>
-        <Text style={s.mutTxt}>{t('week_p')}</Text>
-      </LinearGradient>
-      {winners.length > 0 && <>
-        <Text style={s.secH}>{t('winners')}</Text>
-        {winners.map((w) => w.pets && <Row key={w.scope} p={w.pets} lang={lang} left={scopeLabel(w.scope)} right={fmt(w.paws, lang)} />)}
-      </>}
-      <Text style={s.secH}>{t('alltime')}</Text>
-      {top.length === 0 ? <Text style={s.mutTxt}>{t('empty_feed')}</Text>
-        : top.map((p, i) => <Row key={p.id} p={p} lang={lang} pos={i + 1} right={fmt(p.paws_count, lang)} />)}
-    </ScrollView>
+    <Modal visible animationType="slide" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: '#000', paddingTop: insets.top }}>
+        <View style={{ height: height * 0.62 }}>
+          <Image source={{ uri: photoUrl(p.photo_path) }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={30} />
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.35)' }]} />
+          <Image source={{ uri: photoUrl(p.photo_path) }} style={StyleSheet.absoluteFill} contentFit="contain" transition={150} />
+          <Pressable onPress={onClose} style={s.closeX}><Text style={{ color: '#fff', fontSize: 20, fontWeight: '800' }}>✕</Text></Pressable>
+        </View>
+        <ScrollView style={{ flex: 1, backgroundColor: C.bg }} contentContainerStyle={{ padding: 18, paddingBottom: insets.bottom + 24 }}>
+          <Text style={s.petName}>{p.name}</Text>
+          <Text style={[s.petPlace, { color: C.mut }]}>{flagOf(p.country_code)} {p.city || countryName(p.country_code, lang)} · {agoText(p.created_at, t)}</Text>
+          {!!p.caption && <Text style={[s.caption, { color: C.txt }]}>{p.caption}</Text>}
+          {!!p.song_id && (
+            <Pressable onPress={song} style={[s.songChip, { backgroundColor: C.card }]}>
+              <Text style={s.songTxt} numberOfLines={1}>{playing ? '⏸' : '▶'}  ♪ {p.song_title} · {p.song_artist}</Text>
+            </Pressable>
+          )}
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 18 }}>
+            <Pressable onPress={paw} style={{ flex: 1 }}>
+              {on ? <LinearGradient colors={GRAD} style={[s.btn, s.btnRow]}><Feet size={24} /><Text style={s.btnTxt}>{fmt(n, lang)}</Text></LinearGradient>
+                : <View style={[s.btn, s.btnRow, s.btnSec]}><Feet size={24} /><Text style={s.btnTxt}>{t('give_paw')} · {fmt(n, lang)}</Text></View>}
+            </Pressable>
+            <Btn label={'↗ ' + t('invite')} secondary onPress={() => Share.share({ message: shareText(t, p) }).catch(() => {})} style={{ flex: 1 }} />
+          </View>
+          {!!p.contact_phone && <Btn label={'📞 ' + t('contact_q')} onPress={() => contactOwner(t, p)} style={{ marginTop: 10 }} />}
+          {!!p.credit && <Text style={[s.credit, { color: C.mut }]}>📷 {p.credit}</Text>}
+        </ScrollView>
+      </View>
+    </Modal>
   );
 }
-function Row({ p, lang, pos, left, right }) {
+
+/* ============================== TOP ============================== */
+function usePlace() {
+  const def = COUNTRIES.includes(deviceRegion()) ? deviceRegion() : 'RS';
+  const [place, setPlaceState] = useState({ cc: def, city: '' });
+  useEffect(() => { AsyncStorage.getItem('paws-place').then((v) => { if (v) { try { setPlaceState((p) => ({ ...p, ...JSON.parse(v) })); } catch (e) {} } }).catch(() => {}); }, []);
+  const setPlace = (np) => { setPlaceState(np); AsyncStorage.setItem('paws-place', JSON.stringify(np)).catch(() => {}); };
+  return [place, setPlace];
+}
+
+function Top({ t, lang, uid }) {
+  const [mode, setMode] = useState('world');
+  const [place, setPlace] = usePlace();
+  const [cityDraft, setCityDraft] = useState('');
+  const [ccOpen, setCcOpen] = useState(false);
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const [open, setOpen] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  useEffect(() => { setCityDraft(place.city); }, [place.city]);
+
+  const load = useCallback(async () => {
+    setErr(null);
+    try {
+      const out = {};
+      if (mode === 'world') {
+        const { data: top, error } = await selectPets((q) => q.eq('status', 'active').order('paws_count', { ascending: false }).limit(50));
+        if (error) throw error;
+        out.top = top || [];
+        const { data: w } = await supabase.from('weekly_winners').select('scope,paws,week_start,pets(' + PET_FIELDS_OLD + ')').order('week_start', { ascending: false }).limit(40);
+        const latest = w && w[0] ? w.filter((x) => x.week_start === w[0].week_start) : [];
+        out.winners = latest.filter((x) => x.scope === 'world' || x.scope === 'country:' + place.cc || x.scope.startsWith('cat:')).slice(0, 7);
+      } else if (mode === 'country') {
+        const { data: top, error } = await selectPets((q) => q.eq('status', 'active').eq('country_code', place.cc).order('paws_count', { ascending: false }).limit(50));
+        if (error) throw error;
+        out.top = top || [];
+      } else if (mode === 'city') {
+        if (place.city) {
+          const { data: m } = await supabase.rpc('city_top', { p_cc: place.cc, p_city: place.city, p_from: monthStartISO(), p_limit: 30 });
+          const ids = (m || []).map((x) => x.pet_id);
+          let month = [];
+          if (ids.length) {
+            const { data: pets } = await selectPets((q) => q.in('id', ids));
+            const byId = Object.fromEntries((pets || []).map((p) => [p.id, p]));
+            month = (m || []).filter((x) => byId[x.pet_id]).map((x) => ({ ...byId[x.pet_id], _month: x.n }));
+          }
+          out.month = month;
+          const { data: all, error } = await selectPets((q) => q.eq('status', 'active').eq('country_code', place.cc).ilike('city', place.city.trim()).order('paws_count', { ascending: false }).limit(30));
+          if (error) throw error;
+          out.top = all || [];
+        }
+      } else {
+        const { data: mw } = await supabase.from('monthly_winners').select('month_start,city,country_code,paws,pets(' + PET_FIELDS_OLD + ')').eq('country_code', place.cc).order('month_start', { ascending: false }).limit(200);
+        const rows = mw || [];
+        const last = rows[0]?.month_start;
+        out.month = rows.filter((x) => x.month_start === last && x.pets);
+        const year = new Date().getUTCFullYear();
+        out.finalists = new Set(rows.filter((x) => x.month_start >= `${year}-01-01` && x.month_start < `${year}-12-01`).map((x) => x.pets?.id)).size;
+        const { data: yw } = await supabase.from('yearly_winners').select('year,scope,paws,pets(' + PET_FIELDS_OLD + ')').order('year', { ascending: false }).limit(60);
+        out.year = (yw || []).filter((x) => x.pets && (x.scope === 'world' || x.scope === 'country:' + place.cc)).slice(0, 6);
+        out.lastMonth = last;
+      }
+      setData({ ...out, key: mode + '|' + place.cc + '|' + place.city });
+    } catch (e) { setErr(t('err_net')); }
+  }, [mode, place.cc, place.city, t]);
+  useEffect(() => { setData(null); load(); }, [load]);
+  const refresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
+
+  const scopeLabel = (sc) => (sc === 'world' ? '🌍 ' + t('world') : sc.startsWith('country:') ? flagOf(sc.slice(8)) + ' ' + countryName(sc.slice(8), lang) : CATS.find((c) => c[0] === sc.slice(4))?.[1] + ' ' + t('c_' + sc.slice(4)));
+  const openPet = async (p) => {
+    // lists that come from joins carry only the basic fields; load the full row for song and contact
+    const { data: full } = await selectPets((q) => q.eq('id', p.id).limit(1));
+    setOpen((full && full[0]) || p);
+  };
+  const monthName = (iso) => { try { return new Date(iso + 'T00:00:00Z').toLocaleDateString(lang, { month: 'long', year: 'numeric' }); } catch (e) { return iso; } };
+
   return (
-    <View style={s.row}>
+    <View style={{ flex: 1 }}>
+      <View style={{ height: 62 }}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={{ padding: 12, alignItems: 'center', gap: 8 }}>
+        {[['world', '🌍'], ['country', flagOf(place.cc)], ['city', '🏙️'], ['contest', '🏆']].map(([k, e]) => (
+          <Pressable key={k} onPress={() => setMode(k)} style={[s.seg, mode === k && s.segOn]}>
+            <Text style={[s.segTxt, mode === k && { color: '#111' }]}>{e} {t('top_' + k)}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+      </View>
+      <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40 }} keyboardShouldPersistTaps="handled"
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.g1} colors={[C.g1]} />}>
+        {(mode === 'country' || mode === 'city' || mode === 'contest') && (
+          <View style={s.placeBox}>
+            <Pressable onPress={() => setCcOpen(true)} style={[s.input, { justifyContent: 'center', flex: mode === 'city' ? 0.9 : 1 }]}>
+              <Text style={{ color: C.txt }} numberOfLines={1}>{flagOf(place.cc)} {countryName(place.cc, lang)} ▾</Text>
+            </Pressable>
+            {mode === 'city' && (
+              <TextInput value={cityDraft} onChangeText={setCityDraft} placeholder={t('city_ph')} placeholderTextColor={C.mut} maxLength={40}
+                onSubmitEditing={() => setPlace({ ...place, city: cityDraft.trim() })} onBlur={() => setPlace({ ...place, city: cityDraft.trim() })}
+                returnKeyType="search" style={[s.input, { flex: 1.1 }]} />
+            )}
+          </View>
+        )}
+        {err ? <View style={{ marginTop: 40 }}><Text style={s.errTxt}>{err}</Text><Btn label={t('retry')} onPress={load} style={{ marginTop: 16 }} /></View>
+          : (!data || data.key !== mode + '|' + place.cc + '|' + place.city) ? <ActivityIndicator color={C.g1} size="large" style={{ marginTop: 50 }} />
+          : mode === 'world' ? (<>
+            <LinearGradient colors={['rgba(255,79,123,0.22)', 'rgba(255,146,72,0.08)']} style={s.weekBox}>
+              <Text style={s.weekH}>{t('week_b')}</Text>
+              <Text style={[s.mutTxt, { textAlign: 'left' }]}>{t('week_p')}</Text>
+            </LinearGradient>
+            {data.winners.length > 0 && <>
+              <Text style={s.secH}>{t('winners')}</Text>
+              {data.winners.map((w) => w.pets && <Row key={w.scope} p={w.pets} lang={lang} left={scopeLabel(w.scope)} right={fmt(w.paws, lang)} onPress={() => openPet(w.pets)} />)}
+            </>}
+            <Text style={s.secH}>{t('alltime')}</Text>
+            {data.top.length === 0 ? <Text style={s.mutTxt}>{t('empty_feed')}</Text>
+              : data.top.map((p, i) => <Row key={p.id} p={p} lang={lang} pos={i + 1} right={fmt(p.paws_count, lang)} onPress={() => openPet(p)} />)}
+          </>)
+          : mode === 'country' ? (<>
+            <Text style={s.secH}>{t('best_country')} · {countryName(place.cc, lang)}</Text>
+            {data.top.length === 0 ? <Text style={s.mutTxt}>{t('empty_feed')}</Text>
+              : data.top.map((p, i) => <Row key={p.id} p={p} lang={lang} pos={i + 1} right={fmt(p.paws_count, lang)} onPress={() => openPet(p)} />)}
+          </>)
+          : mode === 'city' ? (!place.city ? <Text style={[s.mutTxt, { marginTop: 30 }]}>{t('city_need')}</Text> : <>
+            <Text style={s.secH}>{t('best_city_month')} · {place.city}</Text>
+            {data.month.length === 0 ? <Text style={[s.mutTxt, { textAlign: 'left' }]}>{t('none_yet')}</Text>
+              : data.month.map((p, i) => <Row key={p.id} p={p} lang={lang} pos={i + 1} right={fmt(p._month, lang)} onPress={() => openPet(p)} />)}
+            <Text style={s.secH}>{t('best_city_all')}</Text>
+            {data.top.length === 0 ? <Text style={[s.mutTxt, { textAlign: 'left' }]}>{t('empty_feed')}</Text>
+              : data.top.map((p, i) => <Row key={p.id} p={p} lang={lang} pos={i + 1} right={fmt(p.paws_count, lang)} onPress={() => openPet(p)} />)}
+          </>)
+          : (<>
+            <LinearGradient colors={['rgba(255,194,94,0.22)', 'rgba(255,79,123,0.08)']} style={s.weekBox}>
+              <Text style={s.weekH}>{t('contest_h')}</Text>
+              <Text style={[s.mutTxt, { textAlign: 'left', lineHeight: 20 }]}>{t('contest_p')}</Text>
+              <View style={{ marginTop: 12, gap: 6 }}>
+                {['contest_s1', 'contest_s2', 'contest_s3', 'contest_s4'].map((k) => <Text key={k} style={[s.rowName, { fontSize: 14 }]}>{t(k)}</Text>)}
+              </View>
+              <Text style={[s.rowSub, { marginTop: 10, color: C.g2, fontWeight: '800' }]}>{t('finalists', { n: data.finalists || 0 })} · {flagOf(place.cc)}</Text>
+            </LinearGradient>
+            {data.year.length > 0 && <>
+              <Text style={s.secH}>{t('year_winners')}</Text>
+              {data.year.map((w) => <Row key={w.year + w.scope} p={w.pets} lang={lang} left={`${w.year} · ${scopeLabel(w.scope)}`} right={fmt(w.paws, lang)} onPress={() => openPet(w.pets)} />)}
+            </>}
+            <Text style={s.secH}>{t('month_winners')}{data.lastMonth ? ' · ' + monthName(data.lastMonth) : ''}</Text>
+            {data.month.length === 0 ? <Text style={[s.mutTxt, { textAlign: 'left' }]}>{t('no_winners')}</Text>
+              : data.month.map((w) => <Row key={w.city} p={w.pets} lang={lang} left={`🏙️ ${w.city}`} right={fmt(w.paws, lang)} onPress={() => openPet(w.pets)} />)}
+          </>)}
+      </ScrollView>
+      <CountryPicker visible={ccOpen} lang={lang} onClose={() => setCcOpen(false)} onPick={(c) => setPlace({ ...place, cc: c })} />
+      {open && <PetView p={open} t={t} lang={lang} uid={uid} onClose={() => setOpen(null)} />}
+    </View>
+  );
+}
+function Row({ p, lang, pos, left, right, onPress }) {
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => [s.row, pressed && { opacity: 0.6 }]}>
       {pos ? <Text style={[s.pos, pos <= 3 && { color: C.g2 }]}>{pos}</Text> : null}
       <Image source={{ uri: photoUrl(p.photo_path) }} style={s.rowImg} contentFit="cover" />
       <View style={{ flex: 1 }}>
         <Text style={s.rowName} numberOfLines={1}>{p.name}</Text>
         <Text style={s.rowSub} numberOfLines={1}>{left || `${flagOf(p.country_code)} ${p.city || countryName(p.country_code, lang)}`}</Text>
       </View>
-      <Text style={s.rowRight}>🐾 {right}</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}><Feet size={16} color={C.g2} /><Text style={s.rowRight}>{right}</Text></View>
+      <Text style={{ color: C.mut, fontSize: 18, marginLeft: 4 }}>›</Text>
+    </Pressable>
+  );
+}
+function CountryPicker({ visible, lang, onClose, onPick }) {
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={s.shade} onPress={onClose}>
+        <View style={s.sheet}>
+          <ScrollView style={{ maxHeight: 460 }}>
+            {COUNTRIES.map((c) => (
+              <Pressable key={c} onPress={() => { onPick(c); onClose(); }} style={s.langRow}><Text style={s.langRowTxt}>{flagOf(c)}  {countryName(c, lang)}</Text></Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      </Pressable>
+    </Modal>
+  );
+}
+
+/* ============================== SONG PICKER ============================== */
+function SongPicker({ visible, t, onClose, onPick }) {
+  const insets = useSafeAreaInsets();
+  const [q, setQ] = useState('');
+  const [res, setRes] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [playing, setPlaying] = useState(null);
+  useEffect(() => {
+    if (!visible) { stopSong(); setPlaying(null); return undefined; }
+    const term = q.trim() || 'happy';
+    const id = setTimeout(async () => {
+      setBusy(true); setErr(null);
+      try { setRes(await searchSongs(term)); } catch (e) { setErr(t('song_err')); }
+      setBusy(false);
+    }, 400);
+    return () => clearTimeout(id);
+  }, [q, visible, t]);
+  const preview = (r) => { if (playing === r.id) { stopSong(); setPlaying(null); } else { setPlaying(r.id); playSong(r.id, r.preview); } };
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: C.bg, paddingTop: insets.top + 10, paddingHorizontal: 16 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <TextInput value={q} onChangeText={setQ} placeholder={t('song_search')} placeholderTextColor={C.mut} autoFocus style={[s.input, { flex: 1 }]} returnKeyType="search" />
+          <Pressable onPress={onClose}><Text style={{ color: C.txt, fontWeight: '700' }}>{t('close')}</Text></Pressable>
+        </View>
+        <Text style={[s.rowSub, { marginVertical: 8 }]}>{t('song_note')}</Text>
+        {busy && <ActivityIndicator color={C.g1} style={{ marginTop: 10 }} />}
+        {!!err && <Text style={[s.errTxt, { marginTop: 20 }]}>{err}</Text>}
+        <FlatList
+          data={res}
+          keyExtractor={(r) => String(r.id)}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingBottom: insets.bottom + 30 }}
+          ListEmptyComponent={!busy && !err ? <Text style={[s.mutTxt, { marginTop: 20 }]}>{t('song_none')}</Text> : null}
+          renderItem={({ item: r }) => (
+            <View style={s.row}>
+              <Pressable onPress={() => preview(r)} style={s.songPlay}>
+                {r.cover ? <Image source={{ uri: r.cover }} style={StyleSheet.absoluteFill} contentFit="cover" /> : null}
+                <View style={s.songPlayIc}><Text style={{ color: '#fff', fontSize: 16 }}>{playing === r.id ? '⏸' : '▶'}</Text></View>
+              </Pressable>
+              <Pressable style={{ flex: 1 }} onPress={() => { stopSong(); onPick(r); }}>
+                <Text style={s.rowName} numberOfLines={1}>{r.title}</Text>
+                <Text style={s.rowSub} numberOfLines={1}>{r.artist}</Text>
+              </Pressable>
+              <Pressable onPress={() => { stopSong(); onPick(r); }} style={s.pickBtn}><Text style={{ color: '#fff', fontWeight: '800' }}>+</Text></Pressable>
+            </View>
+          )}
+        />
+      </View>
+    </Modal>
+  );
+}
+
+/* ============================== CONTACT FIELDS ============================== */
+const CONTACT_APPS = ['call', 'sms', 'whatsapp', 'viber'];
+function ContactFields({ t, on, setOn, phone, setPhone, apps, setApps }) {
+  const toggle = (a) => setApps(apps.includes(a) ? apps.filter((x) => x !== a) : [...apps, a]);
+  return (
+    <View style={s.box}>
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <Text style={[s.rowName, { flex: 1 }]}>📞 {t('contact_on')}</Text>
+        <Switch value={on} onValueChange={setOn} trackColor={{ true: C.g1, false: '#3a3844' }} thumbColor="#fff" />
+      </View>
+      {on && <>
+        <Label>{t('contact_phone')}</Label>
+        <TextInput value={phone} onChangeText={setPhone} placeholder={t('contact_ph')} placeholderTextColor={C.mut} keyboardType="phone-pad" maxLength={22} style={s.input} />
+        <Label>{t('contact_how')}</Label>
+        <View style={s.catWrap}>
+          {CONTACT_APPS.map((a) => (
+            <Pressable key={a} onPress={() => toggle(a)} style={[s.catBtn, apps.includes(a) && s.catOn]}><Text style={s.catTxt}>{t('c_' + a)}</Text></Pressable>
+          ))}
+        </View>
+        <Text style={[s.rowSub, { marginTop: 8 }]}>⚠️ {t('contact_warn')}</Text>
+      </>}
     </View>
   );
 }
 
 /* ============================== POST ============================== */
 function Post({ t, lang, uid, detector, onDone }) {
-  const [img, setImg] = useState(null); // {uri, b64}
-  const [check, setCheck] = useState(null); // null | 'wait' | {animal, cat, conf, cls}
+  const [place, setPlace] = usePlace();
+  const [img, setImg] = useState(null); // {uri, b64, small}
+  const [check, setCheck] = useState(null); // null | 'wait' | {animal, cat, conf, cls} | {error}
   const [name, setName] = useState('');
   const [cat, setCat] = useState('psi');
   const [city, setCity] = useState('');
-  const [cc, setCc] = useState(COUNTRIES.includes(deviceRegion()) ? deviceRegion() : 'RS');
+  const [cc, setCc] = useState(place.cc);
   const [caption, setCaption] = useState('');
+  const [song, setSong] = useState(null);
+  const [songOpen, setSongOpen] = useState(false);
+  const [cOn, setCOn] = useState(false);
+  const [phone, setPhone] = useState('');
+  const [apps, setApps] = useState(['call', 'whatsapp', 'viber']);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [ccOpen, setCcOpen] = useState(false);
+  useEffect(() => { setCc(place.cc); if (place.city) setCity((c) => c || place.city); }, [place.cc, place.city]);
+  useEffect(() => { AsyncStorage.getItem('paws-phone').then((v) => { if (v) setPhone(v); }).catch(() => {}); }, []);
 
+  async function runCheck(small) {
+    setCheck('wait');
+    try {
+      const res = await detector.current.detect(small);
+      if (!res.ok) throw new Error(res.error);
+      const result = { animal: res.animal, conf: res.conf, cls: res.cls, cat: res.animal ? catOfClass(res.cls) : null };
+      setCheck(result);
+      if (result.animal) setCat(result.cat);
+    } catch (e) {
+      setCheck({ error: true, animal: false }); // no check, no post
+    }
+  }
   async function pick() {
     setErr(null);
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -368,53 +758,58 @@ function Post({ t, lang, uid, detector, onDone }) {
     const a = r.assets[0];
     const scale = Math.min(1, 1080 / Math.max(a.width || 1080, a.height || 1080));
     const m = await manipulateAsync(a.uri, scale < 1 ? [{ resize: { width: Math.round((a.width || 1080) * scale) } }] : [], { compress: 0.82, format: SaveFormat.JPEG, base64: true });
-    setImg({ uri: m.uri, b64: m.base64 });
-    setCheck('wait');
-    try {
-      const small = await manipulateAsync(m.uri, [{ resize: { width: 320 } }], { compress: 0.8, format: SaveFormat.JPEG, base64: true });
-      const res = await detector.current.detect(small.base64);
-      if (!res.ok) throw new Error(res.error);
-      const result = { animal: res.animal, conf: res.conf, cls: res.cls, cat: res.animal ? catOfClass(res.cls) : null };
-      setCheck(result);
-      if (result.animal) setCat(result.cat);
-    } catch (e) {
-      setCheck({ unavailable: true, animal: true }); // detector offline: allow, reports will catch abuse
-    }
+    const small = await manipulateAsync(m.uri, [{ resize: { width: 448 } }], { compress: 0.9, format: SaveFormat.JPEG, base64: true });
+    setImg({ uri: m.uri, b64: m.base64, small: small.base64 });
+    runCheck(small.base64);
   }
 
   async function publish() {
     if (!img || !check || check === 'wait' || !check.animal) { setErr(t('err_img')); return; }
     if (!name.trim()) { setErr(t('err_name')); return; }
+    if (cOn && !PHONE_RE.test(phone.trim())) { setErr(t('err_phone')); return; }
     setBusy(true); setErr(null);
     try {
       const path = `${uid}/${Date.now()}.jpg`;
       const up = await supabase.storage.from('pet-photos').upload(path, decode(img.b64), { contentType: 'image/jpeg' });
       if (up.error) throw up.error;
-      const { error } = await supabase.from('pets').insert({
+      const row = {
         owner_id: uid, name: name.trim().slice(0, 24), category: cat, city: city.trim().slice(0, 40) || null, country_code: cc,
         caption: caption.trim().slice(0, 120) || null, photo_path: path,
-        ai_label: check.unavailable ? null : String(check.cls), ai_confidence: check.unavailable ? null : Math.min(1, check.conf),
-      });
-      if (error) throw error;
-      setImg(null); setCheck(null); setName(''); setCaption('');
-      Alert.alert('Paws', t('posted', { name: name.trim() }));
+        ai_label: String(check.cls), ai_confidence: Math.min(1, check.conf),
+      };
+      if (song) Object.assign(row, { song_id: song.id, song_title: song.title.slice(0, 80), song_artist: song.artist.slice(0, 80), song_cover: song.cover });
+      if (cOn) Object.assign(row, { contact_phone: phone.trim(), contact_apps: apps.length ? apps : ['call'] });
+      const { error } = await supabase.from('pets').insert(row);
+      if (error) {
+        supabase.storage.from('pet-photos').remove([path]).catch(() => {});
+        if (/not_an_animal/.test(error.message || '')) { setCheck({ animal: false }); throw new Error(t('ai_no')); }
+        if (/column/.test(error.message || '')) throw new Error(t('need_db'));
+        throw error;
+      }
+      setPlace({ cc, city: city.trim() || place.city });
+      if (cOn) AsyncStorage.setItem('paws-phone', phone.trim()).catch(() => {});
+      setImg(null); setCheck(null); setName(''); setCaption(''); setSong(null);
+      Alert.alert('Paws', t('posted', { name: row.name }));
       onDone();
-    } catch (e) { setErr(t('err_net') + '\n' + (e?.message || '')); }
+    } catch (e) { setErr((e?.message && !/fetch|network/i.test(e.message)) ? e.message : t('err_net')); }
     setBusy(false);
   }
 
   return (
     <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
       <Text style={s.pageH}>{t('up_h')}</Text>
-      <Text style={[s.mutTxt, { marginBottom: 14 }]}>{t('up_sub')}</Text>
+      <Text style={[s.mutTxt, { marginBottom: 14, textAlign: 'left' }]}>{t('up_sub')}</Text>
       <Pressable onPress={pick} style={s.drop}>
         {img ? <Image source={{ uri: img.uri }} style={StyleSheet.absoluteFill} contentFit="cover" />
           : <><Text style={{ fontSize: 34 }}>📷</Text><Text style={[s.mutTxt, { marginTop: 6, fontWeight: '700' }]}>{t('up_pick')}</Text></>}
       </Pressable>
       {check === 'wait' && <View style={[s.ai, s.aiWait]}><ActivityIndicator color="#fff" /><Text style={s.aiTxt}>{t('ai_wait')}{'\n'}<Text style={s.aiSmall}>{t('ai_wait2')}</Text></Text></View>}
-      {check && check !== 'wait' && !check.unavailable && (check.animal
-        ? <View style={[s.ai, s.aiOk]}><Text style={[s.aiTxt, { color: '#6BEBB4' }]}>✓ {t('ai_ok')}: {CATS.find((c) => c[0] === check.cat)?.[1]} {t('c_' + check.cat)}{'\n'}<Text style={s.aiSmall}>{Math.round(check.conf * 100)}% {t('ai_sure')}</Text></Text></View>
-        : <View style={[s.ai, s.aiNo]}><Text style={[s.aiTxt, { color: '#FF8FA8' }]}>✗ {t('ai_no')}{'\n'}<Text style={s.aiSmall}>{t('ai_no2')}</Text></Text></View>)}
+      {check && check !== 'wait' && (check.error
+        ? <View style={[s.ai, s.aiNo]}><Text style={[s.aiTxt, { color: '#FF8FA8' }]}>⚠️ {t('ai_err')}{'\n'}<Text style={s.aiSmall}>{t('ai_err2')}</Text></Text>
+          <Pressable onPress={() => runCheck(img.small)} style={s.pickBtn}><Text style={{ color: '#fff', fontWeight: '800' }}>↻</Text></Pressable></View>
+        : check.animal
+          ? <View style={[s.ai, s.aiOk]}><Text style={[s.aiTxt, { color: '#6BEBB4' }]}>✓ {t('ai_ok')}: {CATS.find((c) => c[0] === check.cat)?.[1]} {t('c_' + check.cat)}{'\n'}<Text style={s.aiSmall}>{Math.round(check.conf * 100)}% {t('ai_sure')}</Text></Text></View>
+          : <View style={[s.ai, s.aiNo]}><Text style={[s.aiTxt, { color: '#FF8FA8' }]}>✗ {t('ai_no')}{'\n'}<Text style={s.aiSmall}>{t('ai_no2')}</Text></Text></View>)}
 
       <Label>{t('up_name')}</Label>
       <TextInput value={name} onChangeText={setName} maxLength={24} style={s.input} placeholderTextColor={C.mut} />
@@ -432,20 +827,23 @@ function Post({ t, lang, uid, detector, onDone }) {
       </View>
       <Label>{t('up_cap')}</Label>
       <TextInput value={caption} onChangeText={setCaption} maxLength={120} style={s.input} />
-      {!!err && <Text style={[s.errTxt, { marginTop: 10, textAlign: 'left' }]}>{err}</Text>}
-      <Btn label={busy ? t('uploading') : t('publish')} onPress={publish} disabled={busy || check === 'wait' || (check && !check.animal)} style={{ marginTop: 18 }} />
 
-      <Modal visible={ccOpen} transparent animationType="slide" onRequestClose={() => setCcOpen(false)}>
-        <Pressable style={s.shade} onPress={() => setCcOpen(false)}>
-          <View style={s.sheet}>
-            <ScrollView style={{ maxHeight: 460 }}>
-              {COUNTRIES.map((c) => (
-                <Pressable key={c} onPress={() => { setCc(c); setCcOpen(false); }} style={s.langRow}><Text style={s.langRowTxt}>{flagOf(c)}  {countryName(c, lang)}</Text></Pressable>
-              ))}
-            </ScrollView>
-          </View>
-        </Pressable>
-      </Modal>
+      <Label>{t('song')}</Label>
+      {song ? (
+        <View style={[s.box, { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 0 }]}>
+          {song.cover ? <Image source={{ uri: song.cover }} style={{ width: 44, height: 44, borderRadius: 10 }} /> : <Text style={{ fontSize: 26 }}>🎵</Text>}
+          <View style={{ flex: 1 }}><Text style={s.rowName} numberOfLines={1}>{song.title}</Text><Text style={s.rowSub} numberOfLines={1}>{song.artist}</Text></View>
+          <Pressable onPress={() => setSong(null)}><Text style={{ color: C.mut, fontSize: 20, padding: 6 }}>✕</Text></Pressable>
+        </View>
+      ) : <Btn label={t('add_song')} secondary onPress={() => setSongOpen(true)} />}
+
+      <ContactFields t={t} on={cOn} setOn={setCOn} phone={phone} setPhone={setPhone} apps={apps} setApps={setApps} />
+
+      {!!err && <Text style={[s.errTxt, { marginTop: 10, textAlign: 'left' }]}>{err}</Text>}
+      <Btn label={busy ? t('uploading') : t('publish')} onPress={publish} disabled={busy || !check || check === 'wait' || !check.animal} style={{ marginTop: 18 }} />
+
+      <CountryPicker visible={ccOpen} lang={lang} onClose={() => setCcOpen(false)} onPick={setCc} />
+      <SongPicker visible={songOpen} t={t} onClose={() => setSongOpen(false)} onPick={(r) => { setSong(r); setSongOpen(false); }} />
     </ScrollView>
   );
 }
@@ -455,20 +853,24 @@ function Mine({ t, lang, uid, refreshKey, onPost }) {
   const [pets, setPets] = useState(null);
   const [rewards, setRewards] = useState([]);
   const [open, setOpen] = useState(null);
+  const [view, setView] = useState(null);
   const [err, setErr] = useState(null);
-  const load = async () => {
+  const [refreshing, setRefreshing] = useState(false);
+  const [edit, setEdit] = useState(null); // {on, phone, apps}
+  const load = useCallback(async () => {
     setErr(null);
     try {
-      const { data, error } = await supabase.from('pets').select(PET_FIELDS + ',status').eq('owner_id', uid).order('created_at', { ascending: false });
+      const { data, error } = await selectPets((q) => q.eq('owner_id', uid).neq('status', 'removed').order('created_at', { ascending: false }));
       if (error) throw error;
       setPets(data || []);
       const ids = (data || []).map((p) => p.id);
       if (ids.length) { const { data: r } = await supabase.from('rewards').select('*').in('pet_id', ids); setRewards(r || []); }
-    } catch (e) { setErr(t('err_net')); }
-  };
-  useEffect(() => { load(); }, [refreshKey]); // eslint-disable-line
+    } catch (e) { setErr(t('err_net') + (e?.message ? '\n' + e.message : '')); }
+  }, [uid, t]);
+  useEffect(() => { load(); }, [load, refreshKey]);
+  const refresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
   const total = (pets || []).reduce((a, p) => a + (p.paws_count || 0), 0);
-  async function del(p) {
+  function del(p) {
     Alert.alert(t('delete'), t('delete_q'), [
       { text: t('cancel'), style: 'cancel' },
       { text: t('delete'), style: 'destructive', onPress: async () => {
@@ -478,12 +880,21 @@ function Mine({ t, lang, uid, refreshKey, onPost }) {
       } },
     ]);
   }
+  async function saveContact() {
+    const on = edit.on && edit.phone.trim();
+    if (on && !PHONE_RE.test(edit.phone.trim())) { Alert.alert('Paws', t('err_phone')); return; }
+    const patch = on ? { contact_phone: edit.phone.trim(), contact_apps: edit.apps.length ? edit.apps : ['call'] } : { contact_phone: null, contact_apps: null };
+    const { error } = await supabase.from('pets').update(patch).eq('id', open.id);
+    if (error) { Alert.alert('Paws', /column/.test(error.message) ? t('need_db') : t('err_net')); return; }
+    setOpen({ ...open, ...patch }); setEdit(null); load();
+  }
   if (err) return <View style={s.center}><Text style={s.errTxt}>{err}</Text><Btn label={t('retry')} onPress={load} style={{ marginTop: 16 }} /></View>;
   if (!pets) return <View style={s.center}><ActivityIndicator color={C.g1} size="large" /></View>;
   return (
-    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.g1} colors={[C.g1]} />}>
       <Text style={s.pageH}>{t('tab_mine')}</Text>
-      <Text style={s.mutTxt}>🐾 {fmt(total, lang)} {t('total')}</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><Feet size={18} color={C.g2} /><Text style={s.mutTxt}>{fmt(total, lang)} {t('total')}</Text></View>
       {pets.length === 0 ? (
         <View style={{ alignItems: 'center', marginTop: 50 }}>
           <Text style={{ fontSize: 46 }}>📷</Text>
@@ -493,9 +904,10 @@ function Mine({ t, lang, uid, refreshKey, onPost }) {
       ) : (
         <View style={s.grid}>
           {pets.map((p) => (
-            <Pressable key={p.id} onPress={() => setOpen(p)} style={s.gi}>
+            <Pressable key={p.id} onPress={() => { setEdit(null); setOpen(p); }} style={s.gi}>
               <Image source={{ uri: photoUrl(p.photo_path) }} style={StyleSheet.absoluteFill} contentFit="cover" />
-              <View style={s.giCnt}><Text style={s.giTxt}>🐾 {fmt(p.paws_count, lang)}</Text></View>
+              <View style={s.giCnt}><Feet size={14} /><Text style={s.giTxt}>{fmt(p.paws_count, lang)}</Text></View>
+              {p.status === 'hidden' && <View style={s.giHidden}><Text style={s.giTxt}>{t('status_hidden')}</Text></View>}
             </Pressable>
           ))}
         </View>
@@ -503,34 +915,49 @@ function Mine({ t, lang, uid, refreshKey, onPost }) {
       <Modal visible={!!open} transparent animationType="slide" onRequestClose={() => setOpen(null)}>
         <Pressable style={s.shade} onPress={() => setOpen(null)}>
           {open && (
-            <Pressable style={s.sheet} onPress={() => {}}>
-              <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center', marginBottom: 12 }}>
-                <Image source={{ uri: photoUrl(open.photo_path) }} style={{ width: 64, height: 64, borderRadius: 14 }} />
-                <View style={{ flex: 1 }}><Text style={s.sheetH}>{open.name}</Text><Text style={s.mutTxt}>🐾 {fmt(open.paws_count, lang)} {t('paws')}</Text></View>
-              </View>
-              {LEVELS.map((m, i) => {
-                const got = open.paws_count >= m[0];
-                const rw = rewards.find((r) => r.pet_id === open.id && r.level === i + 1);
-                return (
-                  <View key={m[1]} style={[s.lvl, got && s.lvlGot]}>
-                    <Text style={{ fontSize: 20 }}>{m[2]}</Text>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.rowName}>{t(m[1])} · {fmt(m[0], lang)}</Text>
-                      <Text style={s.rowSub}>{t(m[1] + 'd')}</Text>
-                      {rw?.promo_code ? <Text style={[s.rowSub, { color: C.ok }]}>{t('code')}: {rw.promo_code}</Text> : null}
+            <Pressable style={[s.sheet, { maxHeight: '88%' }]} onPress={() => {}}>
+              <ScrollView keyboardShouldPersistTaps="handled">
+                <Pressable onPress={() => { const p = open; setOpen(null); setView(p); }} style={{ flexDirection: 'row', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+                  <Image source={{ uri: photoUrl(open.photo_path) }} style={{ width: 64, height: 64, borderRadius: 14 }} />
+                  <View style={{ flex: 1 }}><Text style={s.sheetH}>{open.name}</Text><Text style={[s.mutTxt, { textAlign: 'left' }]}>{fmt(open.paws_count, lang)} {t('paws')} · {t('open')} ›</Text></View>
+                </Pressable>
+                {LEVELS.map((m, i) => {
+                  const got = open.paws_count >= m[0];
+                  const rw = rewards.find((r) => r.pet_id === open.id && r.level === i + 1);
+                  return (
+                    <View key={m[1]} style={[s.lvl, got && s.lvlGot]}>
+                      <Text style={{ fontSize: 20 }}>{m[2]}</Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.rowName}>{t(m[1])} · {fmt(m[0], lang)}</Text>
+                        <Text style={s.rowSub}>{t(m[1] + 'd')}</Text>
+                        {rw?.promo_code ? <Text style={[s.rowSub, { color: C.ok }]}>{t('code')}: {rw.promo_code}</Text> : null}
+                      </View>
+                      <Text style={[s.rowSub, got && { color: C.ok }]}>{got ? t('got') : t('left', { n: fmt(m[0] - open.paws_count, lang) })}</Text>
                     </View>
-                    <Text style={[s.rowSub, got && { color: C.ok }]}>{got ? t('got') : t('left', { n: fmt(m[0] - open.paws_count, lang) })}</Text>
+                  );
+                })}
+                {edit ? (<>
+                  <ContactFields t={t} on={edit.on} setOn={(v) => setEdit({ ...edit, on: v })} phone={edit.phone} setPhone={(v) => setEdit({ ...edit, phone: v })} apps={edit.apps} setApps={(v) => setEdit({ ...edit, apps: v })} />
+                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                    <Btn label={t('cancel')} secondary onPress={() => setEdit(null)} style={{ flex: 1 }} />
+                    <Btn label={t('save')} onPress={saveContact} style={{ flex: 1 }} />
                   </View>
-                );
-              })}
-              <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-                <Btn label={t('delete')} secondary onPress={() => del(open)} style={{ flex: 1 }} />
-                <Btn label={t('invite')} onPress={() => Share.share({ message: `${t('share_msg', { name: open.name })} ${SHARE_BASE}${open.id}` })} style={{ flex: 1 }} />
-              </View>
+                </>) : (
+                  <Pressable onPress={() => setEdit({ on: true, phone: open.contact_phone || '', apps: open.contact_apps || ['call', 'whatsapp', 'viber'] })} style={[s.box, { flexDirection: 'row', alignItems: 'center' }]}>
+                    <Text style={[s.rowName, { flex: 1 }]}>📞 {t('contact')}: <Text style={{ color: C.mut }}>{open.contact_phone || '—'}</Text></Text>
+                    <Text style={{ color: C.g2, fontWeight: '800' }}>{t('edit')}</Text>
+                  </Pressable>
+                )}
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                  <Btn label={t('delete')} secondary onPress={() => del(open)} style={{ flex: 1 }} />
+                  <Btn label={t('invite')} onPress={() => Share.share({ message: shareText(t, open) })} style={{ flex: 1 }} />
+                </View>
+              </ScrollView>
             </Pressable>
           )}
         </Pressable>
       </Modal>
+      {view && <PetView p={view} t={t} lang={lang} uid={uid} onClose={() => setView(null)} />}
     </ScrollView>
   );
 }
@@ -569,7 +996,7 @@ const s = StyleSheet.create({
   chipOn: { backgroundColor: '#fff' },
   chipTxt: { color: '#fff', fontWeight: '700', fontSize: 13 },
   fade: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '55%' },
-  burst: { position: 'absolute', alignSelf: 'center', top: '38%', fontSize: 110 },
+  burst: { position: 'absolute', alignSelf: 'center', top: '36%' },
   meta: { position: 'absolute', left: 16, right: 86, bottom: 22 },
   badgeFeat: { alignSelf: 'flex-start', backgroundColor: '#FFC25E', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, marginBottom: 8 },
   badgeFeatTxt: { color: '#2a1a00', fontWeight: '800', fontSize: 12 },
@@ -618,7 +1045,8 @@ const s = StyleSheet.create({
   langRowTxt: { color: C.txt, fontSize: 16, fontWeight: '600' },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 3, marginTop: 14 },
   gi: { width: '32.6%', aspectRatio: 1, borderRadius: 6, overflow: 'hidden', backgroundColor: C.card },
-  giCnt: { position: 'absolute', left: 6, bottom: 6 },
+  giCnt: { position: 'absolute', left: 6, bottom: 6, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  giHidden: { position: 'absolute', top: 0, left: 0, right: 0, padding: 4, backgroundColor: 'rgba(0,0,0,0.6)' },
   giTxt: { color: '#fff', fontWeight: '800', fontSize: 12, textShadowColor: 'rgba(0,0,0,0.6)', textShadowRadius: 4 },
   lvl: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 10, borderRadius: 14, backgroundColor: C.card, borderWidth: 1, borderColor: C.line, marginTop: 6 },
   lvlGot: { borderColor: 'rgba(61,220,151,0.4)', backgroundColor: 'rgba(61,220,151,0.07)' },
@@ -626,4 +1054,18 @@ const s = StyleSheet.create({
   welcomeImg: { position: 'absolute', top: 0, left: 0, right: 0, height: '62%' },
   welcomeFade: { position: 'absolute', left: 0, right: 0, top: '35%', height: '28%' },
   welcomeH: { color: C.txt, fontSize: 34, fontWeight: '800', letterSpacing: -1, lineHeight: 38 },
+  intro: { backgroundColor: C.bg, zIndex: 50, elevation: 50 },
+  btnRow: { flexDirection: 'row', gap: 8 },
+  btnSec: { backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: C.line },
+  closeX: { position: 'absolute', top: 12, right: 12, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' },
+  songChip: { marginTop: 10, alignSelf: 'flex-start', maxWidth: '100%', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16, backgroundColor: 'rgba(0,0,0,0.45)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
+  songTxt: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  seg: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20, backgroundColor: C.card, borderWidth: 1, borderColor: C.line },
+  segOn: { backgroundColor: '#fff' },
+  segTxt: { color: C.txt, fontWeight: '800', fontSize: 13 },
+  placeBox: { flexDirection: 'row', gap: 10, marginBottom: 6 },
+  box: { marginTop: 14, padding: 14, borderRadius: 16, backgroundColor: C.card, borderWidth: 1, borderColor: C.line },
+  songPlay: { width: 48, height: 48, borderRadius: 10, overflow: 'hidden', backgroundColor: C.card },
+  songPlayIc: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.35)' },
+  pickBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: C.g1 },
 });
