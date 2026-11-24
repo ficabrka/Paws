@@ -11,6 +11,7 @@ import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { decode } from 'base64-arraybuffer';
+import * as Clipboard from 'expo-clipboard';
 import Detector from './src/Detector';
 import INTRO from './src/introFrames';
 import {
@@ -60,6 +61,8 @@ function Root() {
   const [welcome, setWelcome] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [posted, setPosted] = useState(null);
+  const clearPosted = useCallback(() => setPosted(null), []);
   const detector = useRef(null);
 
   useEffect(() => {
@@ -107,8 +110,8 @@ function Root() {
           </View>
         ) : tab === 'feed' ? <Feed t={t} lang={lang} uid={uid} refreshKey={refreshKey} paused={intro || welcome} />
           : tab === 'top' ? <Top t={t} lang={lang} uid={uid} />
-          : tab === 'post' ? <Post t={t} lang={lang} uid={uid} detector={detector} onDone={() => { setRefreshKey((k) => k + 1); setTab('mine'); }} />
-          : <Mine t={t} lang={lang} uid={uid} refreshKey={refreshKey} onPost={() => setTab('post')} />}
+          : tab === 'post' ? <Post t={t} lang={lang} uid={uid} detector={detector} onDone={(id) => { setPosted(id || null); setRefreshKey((k) => k + 1); setTab('mine'); }} />
+          : <Mine t={t} lang={lang} uid={uid} refreshKey={refreshKey} onPost={() => setTab('post')} posted={posted} clearPosted={clearPosted} />}
       </View>
 
       <View style={[s.tabbar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
@@ -222,6 +225,118 @@ async function setPaw(uid, p, on) {
   return on ? supabase.from('paws').insert({ pet_id: p.id, user_id: uid }) : supabase.from('paws').delete().eq('pet_id', p.id).eq('user_id', uid);
 }
 
+/* ============================== small turning elephant ============================== */
+function Elephant({ width = 180, style }) {
+  const [i, setI] = useState(Math.floor(INTRO.length / 2));
+  useEffect(() => {
+    const t0 = Date.now();
+    const id = setInterval(() => {
+      const x = Math.sin(((Date.now() - t0) / 1000) * Math.PI * 0.8);
+      setI(Math.round((x + 1) / 2 * (INTRO.length - 1)));
+    }, 50);
+    return () => clearInterval(id);
+  }, []);
+  const h = Math.round(width * 412 / 720);
+  return (
+    <View style={[{ width, height: h, borderRadius: 18, overflow: 'hidden' }, style]}>
+      {INTRO.map((src, k) => <Image key={k} source={src} style={[StyleSheet.absoluteFill, { opacity: k === i ? 1 : 0 }]} contentFit="cover" />)}
+    </View>
+  );
+}
+
+/* ============================== themed bottom sheet ============================== */
+function Sheet({ visible, onClose, children }) {
+  const insets = useSafeAreaInsets();
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
+      <Pressable style={s.shade} onPress={onClose}>
+        <Pressable onPress={() => {}} style={[s.sheet2, { paddingBottom: insets.bottom + 18 }]}>
+          <View style={s.grabber} />
+          <Pressable onPress={onClose} style={s.sheetX} hitSlop={12}><Text style={{ color: C.txt, fontSize: 16, fontWeight: '800' }}>✕</Text></Pressable>
+          {children}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+/* ============================== invite friends ============================== */
+const shareLink = (p) => `${SHARE_BASE}${p.id}`;
+function InviteButtons({ t, p, onDone }) {
+  const msg = shareText(t, p);
+  const [copied, setCopied] = useState(false);
+  const open = async (url, fallback) => {
+    try { await Linking.openURL(url); onDone && onDone(); } catch (e) { if (fallback) { try { await Linking.openURL(fallback); onDone && onDone(); return; } catch (e2) {} } Share.share({ message: msg }).catch(() => {}); }
+  };
+  const copy = async () => { await Clipboard.setStringAsync(msg); setCopied(true); setTimeout(() => setCopied(false), 2500); };
+  const items = [
+    ['WhatsApp', '#25D366', 'W', () => open(`whatsapp://send?text=${encodeURIComponent(msg)}`, `https://wa.me/?text=${encodeURIComponent(msg)}`)],
+    ['Viber', '#7360F2', 'V', () => open(`viber://forward?text=${encodeURIComponent(msg)}`)],
+    ['Instagram', '#E1306C', 'IG', async () => { await copy(); open('instagram://direct-inbox', 'https://www.instagram.com/direct/inbox/'); }],
+    ['Facebook', '#1877F2', 'f', () => open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareLink(p))}`)],
+    ['Messenger', '#0084FF', 'M', () => open(`fb-messenger://share/?link=${encodeURIComponent(shareLink(p))}`, `https://www.facebook.com/dialog/send?link=${encodeURIComponent(shareLink(p))}&redirect_uri=${encodeURIComponent(shareLink(p))}`)],
+    ['Telegram', '#229ED9', 'T', () => open(`tg://msg?text=${encodeURIComponent(msg)}`, `https://t.me/share/url?url=${encodeURIComponent(shareLink(p))}&text=${encodeURIComponent(msg)}`)],
+    [copied ? t('copied') : t('copy_link'), '#3a3844', '🔗', copy],
+    [t('more'), '#3a3844', '⋯', () => Share.share({ message: msg }).catch(() => {})],
+  ];
+  return (
+    <View>
+      <View style={s.invGrid}>
+        {items.map(([lb, col, ic, fn]) => (
+          <Pressable key={lb} onPress={fn} style={({ pressed }) => [s.invItem, pressed && { opacity: 0.6 }]}>
+            <View style={[s.invIc, { backgroundColor: col }]}><Text style={s.invIcTxt}>{ic}</Text></View>
+            <Text style={s.invLb} numberOfLines={1}>{lb}</Text>
+          </Pressable>
+        ))}
+      </View>
+      {copied && <Text style={[s.rowSub, { textAlign: 'center', color: C.ok, marginTop: 6 }]}>{t('ig_hint')}</Text>}
+    </View>
+  );
+}
+function InviteSheet({ t, p, onClose, posted }) {
+  return (
+    <Sheet visible={!!p} onClose={onClose}>
+      {p && <>
+        <View style={{ alignItems: 'center', marginTop: 4 }}>
+          {posted ? <Elephant width={200} /> : <Image source={{ uri: photoUrl(p.photo_path) }} style={{ width: 84, height: 84, borderRadius: 20 }} contentFit="cover" />}
+          <Text style={[s.sheetH, { textAlign: 'center', marginTop: 14 }]}>{posted ? t('posted_h', { name: p.name }) : t('invite_h', { name: p.name })}</Text>
+          <Text style={[s.mutTxt, { marginTop: 6, marginBottom: 16 }]}>{t('invite_p')}</Text>
+        </View>
+        <InviteButtons t={t} p={p} />
+      </>}
+    </Sheet>
+  );
+}
+
+/* ============================== report ============================== */
+function ReportSheet({ t, p, uid, onClose }) {
+  const [sent, setSent] = useState(false);
+  useEffect(() => { setSent(false); }, [p]);
+  const send = async (reason) => {
+    await supabase.from('reports').insert({ pet_id: p.id, reporter_id: uid, reason });
+    setSent(true); setTimeout(onClose, 1400);
+  };
+  return (
+    <Sheet visible={!!p} onClose={onClose}>
+      {p && (sent ? (
+        <View style={{ alignItems: 'center', paddingVertical: 24 }}>
+          <Text style={{ fontSize: 40 }}>✓</Text>
+          <Text style={[s.sheetH, { marginTop: 8 }]}>{t('reported')}</Text>
+        </View>
+      ) : (<>
+        <Text style={s.sheetH}>{t('report')}</Text>
+        <Text style={[s.mutTxt, { textAlign: 'left', marginTop: 4, marginBottom: 12 }]}>{t('report_q')}</Text>
+        {[['no_animal', '🚫', 'r_noanimal'], ['inappropriate', '⚠️', 'r_bad'], ['spam', '📢', 'r_spam']].map(([r, ic, k]) => (
+          <Pressable key={r} onPress={() => send(r)} style={({ pressed }) => [s.repRow, pressed && { opacity: 0.6 }]}>
+            <Text style={{ fontSize: 20 }}>{ic}</Text><Text style={[s.rowName, { flex: 1 }]}>{t(k)}</Text><Text style={{ color: C.mut, fontSize: 18 }}>›</Text>
+          </Pressable>
+        ))}
+        <Btn label={t('cancel')} secondary onPress={onClose} style={{ marginTop: 10 }} />
+      </>))}
+    </Sheet>
+  );
+}
+
 /* ============================== FEED ============================== */
 function Feed({ t, lang, uid, refreshKey, paused }) {
   const [cat, setCat] = useState('svi');
@@ -235,6 +350,8 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
   const [burst, setBurst] = useState(null);
   const [active, setActive] = useState(null);
   const [sound, setSound] = useState(true);
+  const [reportP, setReportP] = useState(null);
+  const [inviteP, setInviteP] = useState(null);
 
   useEffect(() => { AsyncStorage.getItem('paws-sound').then((v) => { if (v === '0') setSound(false); }).catch(() => {}); }, []);
   const onViewable = useRef(({ viewableItems }) => { const v = viewableItems.find((x) => x.isViewable); if (v) setActive(v.item.id); }).current;
@@ -294,19 +411,6 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
       togglePaw(p, true); setBurst(p.id); setTimeout(() => setBurst(null), 700); lastTap.current = { id: null, t: 0 };
     } else lastTap.current = { id: p.id, t: now };
   }
-  function report(p) {
-    const send = async (reason) => {
-      await supabase.from('reports').insert({ pet_id: p.id, reporter_id: uid, reason });
-      Alert.alert('Paws', t('reported'));
-    };
-    Alert.alert(t('report'), t('report_q'), [
-      { text: t('r_noanimal'), onPress: () => send('no_animal') },
-      { text: t('r_bad'), onPress: () => send('inappropriate') },
-      { text: t('r_spam'), onPress: () => send('spam') },
-      { text: t('cancel'), style: 'cancel' },
-    ]);
-  }
-
   return (
     <View style={{ flex: 1 }} onLayout={(e) => setH(e.nativeEvent.layout.height)}>
       {h > 0 && (
@@ -325,8 +429,8 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
           viewabilityConfig={viewCfg}
           renderItem={({ item: p }) => (
             <Slide p={p} h={h} t={t} lang={lang} on={liked.has(p.id)} burst={burst === p.id} sound={sound}
-              onTap={() => onTap(p)} onPaw={() => togglePaw(p)} onShare={() => Share.share({ message: shareText(t, p) }).catch(() => {})}
-              onReport={() => report(p)} onContact={() => contactOwner(t, p)} onSound={toggleSound} />
+              onTap={() => onTap(p)} onPaw={() => togglePaw(p)} onShare={() => setInviteP(p)}
+              onReport={() => setReportP(p)} onContact={() => contactOwner(t, p)} onSound={toggleSound} />
           )}
           ListEmptyComponent={
             <View style={[s.center, { height: h }]}>
@@ -344,6 +448,8 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
           </Pressable>
         ))}
       </ScrollView>
+      <ReportSheet t={t} p={reportP} uid={uid} onClose={() => setReportP(null)} />
+      <InviteSheet t={t} p={inviteP} onClose={() => setInviteP(null)} />
     </View>
   );
 }
@@ -408,6 +514,7 @@ function PetView({ p, t, lang, uid, onClose }) {
   const [on, setOn] = useState(false);
   const [n, setN] = useState(p?.paws_count || 0);
   const [playing, setPlaying] = useState(false);
+  const [inv, setInv] = useState(false);
   useEffect(() => {
     if (!p) return;
     setN(p.paws_count || 0); setPlaying(false);
@@ -446,12 +553,13 @@ function PetView({ p, t, lang, uid, onClose }) {
               {on ? <LinearGradient colors={GRAD} style={[s.btn, s.btnRow]}><Feet size={24} /><Text style={s.btnTxt}>{fmt(n, lang)}</Text></LinearGradient>
                 : <View style={[s.btn, s.btnRow, s.btnSec]}><Feet size={24} /><Text style={s.btnTxt}>{t('give_paw')} · {fmt(n, lang)}</Text></View>}
             </Pressable>
-            <Btn label={'↗ ' + t('invite')} secondary onPress={() => Share.share({ message: shareText(t, p) }).catch(() => {})} style={{ flex: 1 }} />
+            <Btn label={'↗ ' + t('invite')} secondary onPress={() => setInv(true)} style={{ flex: 1 }} />
           </View>
           {!!p.contact_phone && <Btn label={'📞 ' + t('contact_q')} onPress={() => contactOwner(t, p)} style={{ marginTop: 10 }} />}
           {!!p.credit && <Text style={[s.credit, { color: C.mut }]}>📷 {p.credit}</Text>}
         </ScrollView>
       </View>
+      <InviteSheet t={t} p={inv ? p : null} onClose={() => setInv(false)} />
     </Modal>
   );
 }
@@ -779,7 +887,7 @@ function Post({ t, lang, uid, detector, onDone }) {
       };
       if (song) Object.assign(row, { song_id: song.id, song_title: song.title.slice(0, 80), song_artist: song.artist.slice(0, 80), song_cover: song.cover });
       if (cOn) Object.assign(row, { contact_phone: phone.trim(), contact_apps: apps.length ? apps : ['call'] });
-      const { error } = await supabase.from('pets').insert(row);
+      const { data: ins, error } = await supabase.from('pets').insert(row).select('id').single();
       if (error) {
         supabase.storage.from('pet-photos').remove([path]).catch(() => {});
         if (/not_an_animal/.test(error.message || '')) { setCheck({ animal: false }); throw new Error(t('ai_no')); }
@@ -789,8 +897,7 @@ function Post({ t, lang, uid, detector, onDone }) {
       setPlace({ cc, city: city.trim() || place.city });
       if (cOn) AsyncStorage.setItem('paws-phone', phone.trim()).catch(() => {});
       setImg(null); setCheck(null); setName(''); setCaption(''); setSong(null);
-      Alert.alert('Paws', t('posted', { name: row.name }));
-      onDone();
+      onDone(ins?.id);
     } catch (e) { setErr((e?.message && !/fetch|network/i.test(e.message)) ? e.message : t('err_net')); }
     setBusy(false);
   }
@@ -848,15 +955,15 @@ function Post({ t, lang, uid, detector, onDone }) {
   );
 }
 
-/* ============================== MINE ============================== */
-function Mine({ t, lang, uid, refreshKey, onPost }) {
+/* ============================== MINE: my posts, like my own listings ============================== */
+function Mine({ t, lang, uid, refreshKey, onPost, posted, clearPosted }) {
   const [pets, setPets] = useState(null);
   const [rewards, setRewards] = useState([]);
-  const [open, setOpen] = useState(null);
+  const [edit, setEdit] = useState(null);
   const [view, setView] = useState(null);
+  const [invite, setInvite] = useState(null);
   const [err, setErr] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [edit, setEdit] = useState(null); // {on, phone, apps}
   const load = useCallback(async () => {
     setErr(null);
     try {
@@ -868,97 +975,149 @@ function Mine({ t, lang, uid, refreshKey, onPost }) {
     } catch (e) { setErr(t('err_net') + (e?.message ? '\n' + e.message : '')); }
   }, [uid, t]);
   useEffect(() => { load(); }, [load, refreshKey]);
+  // right after posting: show the invite window for the new post
+  useEffect(() => { if (posted && pets) { const p = pets.find((x) => x.id === posted) ; if (p) { setInvite({ ...p, _posted: true }); clearPosted(); } } }, [posted, pets, clearPosted]);
   const refresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
   const total = (pets || []).reduce((a, p) => a + (p.paws_count || 0), 0);
-  function del(p) {
+
+  if (err) return <View style={s.center}><Text style={s.errTxt}>{err}</Text><Btn label={t('retry')} onPress={load} style={{ marginTop: 16 }} /></View>;
+  if (!pets) return <View style={s.center}><ActivityIndicator color={C.g1} size="large" /></View>;
+  return (
+    <View style={{ flex: 1 }}>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.g1} colors={[C.g1]} />}>
+        <Text style={s.pageH}>{t('my_posts')}</Text>
+        <View style={s.statRow}>
+          <View style={s.stat}><Text style={s.statN}>{pets.length}</Text><Text style={s.rowSub}>{t('posts_n')}</Text></View>
+          <View style={s.stat}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><Feet size={18} color={C.g2} /><Text style={s.statN}>{fmt(total, lang)}</Text></View><Text style={s.rowSub}>{t('total')}</Text></View>
+        </View>
+        {pets.length === 0 ? (
+          <View style={{ alignItems: 'center', marginTop: 40 }}>
+            <Elephant width={200} />
+            <Text style={[s.mutTxt, { marginVertical: 14 }]}>{t('empty_mine')}</Text>
+            <Btn label={t('btn_post')} onPress={onPost} />
+          </View>
+        ) : pets.map((p) => {
+          const l = levelOf(p.paws_count || 0), next = LEVELS[l + 1];
+          return (
+            <View key={p.id} style={s.myCard}>
+              <Pressable onPress={() => setView(p)}>
+                <Image source={{ uri: photoUrl(p.photo_path) }} style={s.myImg} contentFit="cover" transition={150} />
+                <View style={s.myPaws}><Feet size={16} /><Text style={s.giTxt}>{fmt(p.paws_count, lang)}</Text></View>
+                {p.status === 'hidden' && <View style={s.giHidden}><Text style={s.giTxt}>{t('status_hidden')}</Text></View>}
+              </Pressable>
+              <View style={{ padding: 14 }}>
+                <Text style={s.rowName}>{p.name}</Text>
+                <Text style={s.rowSub}>{flagOf(p.country_code)} {p.city || countryName(p.country_code, lang)} · {agoText(p.created_at, t)}</Text>
+                {!!p.caption && <Text style={[s.rowSub, { color: C.txt, marginTop: 6 }]}>{p.caption}</Text>}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                  {!!p.song_id && <Text style={s.tag}>♪ {p.song_title}</Text>}
+                  {!!p.contact_phone && <Text style={s.tag}>📞 {p.contact_phone}</Text>}
+                  <Text style={s.tag}>{l >= 0 ? `${LEVELS[l][2]} ${t(LEVELS[l][1])}` : t('ms_new')}{next ? ` · ${t('ms_left', { n: fmt(next[0] - (p.paws_count || 0), lang) })}` : ''}</Text>
+                </View>
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                  <Btn label={'✏️ ' + t('edit')} secondary onPress={() => setEdit(p)} style={{ flex: 1 }} />
+                  <Btn label={'↗ ' + t('invite')} onPress={() => setInvite(p)} style={{ flex: 1 }} />
+                </View>
+              </View>
+            </View>
+          );
+        })}
+        <Text style={[s.rowSub, { textAlign: 'center', marginTop: 24, opacity: 0.5 }]}>ID {uid.slice(0, 8)}</Text>
+      </ScrollView>
+      {edit && <EditPost t={t} lang={lang} p={edit} rewards={rewards.filter((r) => r.pet_id === edit.id)} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(); }} />}
+      {view && <PetView p={view} t={t} lang={lang} uid={uid} onClose={() => setView(null)} />}
+      <InviteSheet t={t} p={invite} posted={invite && invite._posted} onClose={() => setInvite(null)} />
+    </View>
+  );
+}
+
+function EditPost({ t, lang, p, rewards, onClose, onSaved }) {
+  const insets = useSafeAreaInsets();
+  const [name, setName] = useState(p.name || '');
+  const [city, setCity] = useState(p.city || '');
+  const [caption, setCaption] = useState(p.caption || '');
+  const [song, setSong] = useState(p.song_id ? { id: p.song_id, title: p.song_title, artist: p.song_artist, cover: p.song_cover } : null);
+  const [songOpen, setSongOpen] = useState(false);
+  const [cOn, setCOn] = useState(!!p.contact_phone);
+  const [phone, setPhone] = useState(p.contact_phone || '');
+  const [apps, setApps] = useState(p.contact_apps || ['call', 'whatsapp', 'viber']);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  async function save() {
+    if (!name.trim()) { setErr(t('err_name')); return; }
+    if (cOn && !PHONE_RE.test(phone.trim())) { setErr(t('err_phone')); return; }
+    setBusy(true); setErr(null);
+    const patch = {
+      name: name.trim().slice(0, 24), city: city.trim().slice(0, 40) || null, caption: caption.trim().slice(0, 120) || null,
+      song_id: song ? song.id : null, song_title: song ? song.title.slice(0, 80) : null, song_artist: song ? song.artist.slice(0, 80) : null, song_cover: song ? song.cover : null,
+      contact_phone: cOn ? phone.trim() : null, contact_apps: cOn ? (apps.length ? apps : ['call']) : null,
+    };
+    const { error } = await supabase.from('pets').update(patch).eq('id', p.id);
+    setBusy(false);
+    if (error) { setErr(/column/.test(error.message) ? t('need_db') : t('err_net')); return; }
+    if (cOn) AsyncStorage.setItem('paws-phone', phone.trim()).catch(() => {});
+    onSaved();
+  }
+  function del() {
     Alert.alert(t('delete'), t('delete_q'), [
       { text: t('cancel'), style: 'cancel' },
       { text: t('delete'), style: 'destructive', onPress: async () => {
         await supabase.from('pets').delete().eq('id', p.id);
         await supabase.storage.from('pet-photos').remove([p.photo_path]);
-        setOpen(null); load();
+        onSaved();
       } },
-    ]);
+    ], { cancelable: true });
   }
-  async function saveContact() {
-    const on = edit.on && edit.phone.trim();
-    if (on && !PHONE_RE.test(edit.phone.trim())) { Alert.alert('Paws', t('err_phone')); return; }
-    const patch = on ? { contact_phone: edit.phone.trim(), contact_apps: edit.apps.length ? edit.apps : ['call'] } : { contact_phone: null, contact_apps: null };
-    const { error } = await supabase.from('pets').update(patch).eq('id', open.id);
-    if (error) { Alert.alert('Paws', /column/.test(error.message) ? t('need_db') : t('err_net')); return; }
-    setOpen({ ...open, ...patch }); setEdit(null); load();
-  }
-  if (err) return <View style={s.center}><Text style={s.errTxt}>{err}</Text><Btn label={t('retry')} onPress={load} style={{ marginTop: 16 }} /></View>;
-  if (!pets) return <View style={s.center}><ActivityIndicator color={C.g1} size="large" /></View>;
   return (
-    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={C.g1} colors={[C.g1]} />}>
-      <Text style={s.pageH}>{t('tab_mine')}</Text>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><Feet size={18} color={C.g2} /><Text style={s.mutTxt}>{fmt(total, lang)} {t('total')}</Text></View>
-      {pets.length === 0 ? (
-        <View style={{ alignItems: 'center', marginTop: 50 }}>
-          <Text style={{ fontSize: 46 }}>📷</Text>
-          <Text style={[s.mutTxt, { marginVertical: 12 }]}>{t('empty_mine')}</Text>
-          <Btn label={t('btn_post')} onPress={onPost} />
+    <Modal visible animationType="slide" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: C.bg, paddingTop: insets.top }}>
+        <View style={s.editTop}>
+          <Pressable onPress={onClose} hitSlop={12}><Text style={{ color: C.txt, fontSize: 16, fontWeight: '700' }}>✕ {t('close')}</Text></Pressable>
+          <Text style={[s.rowName, { fontSize: 16 }]}>{t('edit_post')}</Text>
+          <Pressable onPress={save} disabled={busy} hitSlop={12}><Text style={{ color: C.g2, fontSize: 16, fontWeight: '800' }}>{busy ? '…' : t('save')}</Text></Pressable>
         </View>
-      ) : (
-        <View style={s.grid}>
-          {pets.map((p) => (
-            <Pressable key={p.id} onPress={() => { setEdit(null); setOpen(p); }} style={s.gi}>
-              <Image source={{ uri: photoUrl(p.photo_path) }} style={StyleSheet.absoluteFill} contentFit="cover" />
-              <View style={s.giCnt}><Feet size={14} /><Text style={s.giTxt}>{fmt(p.paws_count, lang)}</Text></View>
-              {p.status === 'hidden' && <View style={s.giHidden}><Text style={s.giTxt}>{t('status_hidden')}</Text></View>}
-            </Pressable>
-          ))}
-        </View>
-      )}
-      <Modal visible={!!open} transparent animationType="slide" onRequestClose={() => setOpen(null)}>
-        <Pressable style={s.shade} onPress={() => setOpen(null)}>
-          {open && (
-            <Pressable style={[s.sheet, { maxHeight: '88%' }]} onPress={() => {}}>
-              <ScrollView keyboardShouldPersistTaps="handled">
-                <Pressable onPress={() => { const p = open; setOpen(null); setView(p); }} style={{ flexDirection: 'row', gap: 12, alignItems: 'center', marginBottom: 12 }}>
-                  <Image source={{ uri: photoUrl(open.photo_path) }} style={{ width: 64, height: 64, borderRadius: 14 }} />
-                  <View style={{ flex: 1 }}><Text style={s.sheetH}>{open.name}</Text><Text style={[s.mutTxt, { textAlign: 'left' }]}>{fmt(open.paws_count, lang)} {t('paws')} · {t('open')} ›</Text></View>
-                </Pressable>
-                {LEVELS.map((m, i) => {
-                  const got = open.paws_count >= m[0];
-                  const rw = rewards.find((r) => r.pet_id === open.id && r.level === i + 1);
-                  return (
-                    <View key={m[1]} style={[s.lvl, got && s.lvlGot]}>
-                      <Text style={{ fontSize: 20 }}>{m[2]}</Text>
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.rowName}>{t(m[1])} · {fmt(m[0], lang)}</Text>
-                        <Text style={s.rowSub}>{t(m[1] + 'd')}</Text>
-                        {rw?.promo_code ? <Text style={[s.rowSub, { color: C.ok }]}>{t('code')}: {rw.promo_code}</Text> : null}
-                      </View>
-                      <Text style={[s.rowSub, got && { color: C.ok }]}>{got ? t('got') : t('left', { n: fmt(m[0] - open.paws_count, lang) })}</Text>
-                    </View>
-                  );
-                })}
-                {edit ? (<>
-                  <ContactFields t={t} on={edit.on} setOn={(v) => setEdit({ ...edit, on: v })} phone={edit.phone} setPhone={(v) => setEdit({ ...edit, phone: v })} apps={edit.apps} setApps={(v) => setEdit({ ...edit, apps: v })} />
-                  <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
-                    <Btn label={t('cancel')} secondary onPress={() => setEdit(null)} style={{ flex: 1 }} />
-                    <Btn label={t('save')} onPress={saveContact} style={{ flex: 1 }} />
-                  </View>
-                </>) : (
-                  <Pressable onPress={() => setEdit({ on: true, phone: open.contact_phone || '', apps: open.contact_apps || ['call', 'whatsapp', 'viber'] })} style={[s.box, { flexDirection: 'row', alignItems: 'center' }]}>
-                    <Text style={[s.rowName, { flex: 1 }]}>📞 {t('contact')}: <Text style={{ color: C.mut }}>{open.contact_phone || '—'}</Text></Text>
-                    <Text style={{ color: C.g2, fontWeight: '800' }}>{t('edit')}</Text>
-                  </Pressable>
-                )}
-                <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-                  <Btn label={t('delete')} secondary onPress={() => del(open)} style={{ flex: 1 }} />
-                  <Btn label={t('invite')} onPress={() => Share.share({ message: shareText(t, open) })} style={{ flex: 1 }} />
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40 }} keyboardShouldPersistTaps="handled">
+          <Image source={{ uri: photoUrl(p.photo_path) }} style={[s.myImg, { borderRadius: 18 }]} contentFit="cover" />
+          <Label>{t('up_name')}</Label>
+          <TextInput value={name} onChangeText={setName} maxLength={24} style={s.input} />
+          <Label>{t('up_city')}</Label>
+          <TextInput value={city} onChangeText={setCity} maxLength={40} style={s.input} />
+          <Label>{t('up_cap')}</Label>
+          <TextInput value={caption} onChangeText={setCaption} maxLength={120} style={s.input} multiline />
+          <Label>{t('song')}</Label>
+          {song ? (
+            <View style={[s.box, { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 0 }]}>
+              {song.cover ? <Image source={{ uri: song.cover }} style={{ width: 44, height: 44, borderRadius: 10 }} /> : <Text style={{ fontSize: 26 }}>🎵</Text>}
+              <View style={{ flex: 1 }}><Text style={s.rowName} numberOfLines={1}>{song.title}</Text><Text style={s.rowSub} numberOfLines={1}>{song.artist}</Text></View>
+              <Pressable onPress={() => setSong(null)}><Text style={{ color: C.mut, fontSize: 20, padding: 6 }}>✕</Text></Pressable>
+            </View>
+          ) : <Btn label={t('add_song')} secondary onPress={() => setSongOpen(true)} />}
+          <ContactFields t={t} on={cOn} setOn={setCOn} phone={phone} setPhone={setPhone} apps={apps} setApps={setApps} />
+          {!!err && <Text style={[s.errTxt, { marginTop: 10, textAlign: 'left' }]}>{err}</Text>}
+          <Btn label={busy ? '…' : t('save')} onPress={save} disabled={busy} style={{ marginTop: 18 }} />
+
+          <Text style={s.secH}>{t('rewards_h')}</Text>
+          {LEVELS.map((m, i) => {
+            const got = (p.paws_count || 0) >= m[0];
+            const rw = rewards.find((r) => r.level === i + 1);
+            return (
+              <View key={m[1]} style={[s.lvl, got && s.lvlGot]}>
+                <Text style={{ fontSize: 20 }}>{m[2]}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.rowName}>{t(m[1])} · {fmt(m[0], lang)}</Text>
+                  <Text style={s.rowSub}>{t(m[1] + 'd')}</Text>
+                  {rw?.promo_code ? <Text style={[s.rowSub, { color: C.ok }]}>{t('code')}: {rw.promo_code}</Text> : null}
                 </View>
-              </ScrollView>
-            </Pressable>
-          )}
-        </Pressable>
-      </Modal>
-      {view && <PetView p={view} t={t} lang={lang} uid={uid} onClose={() => setView(null)} />}
-    </ScrollView>
+                <Text style={[s.rowSub, got && { color: C.ok }]}>{got ? t('got') : t('left', { n: fmt(m[0] - (p.paws_count || 0), lang) })}</Text>
+              </View>
+            );
+          })}
+          <Btn label={'🗑 ' + t('delete')} secondary onPress={del} style={{ marginTop: 20 }} />
+        </ScrollView>
+        <SongPicker visible={songOpen} t={t} onClose={() => setSongOpen(false)} onPick={(r) => { setSong(r); setSongOpen(false); }} />
+      </View>
+    </Modal>
   );
 }
 
@@ -1068,4 +1227,21 @@ const s = StyleSheet.create({
   songPlay: { width: 48, height: 48, borderRadius: 10, overflow: 'hidden', backgroundColor: C.card },
   songPlayIc: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.35)' },
   pickBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: C.g1 },
+  sheet2: { backgroundColor: C.bg2, borderTopLeftRadius: 26, borderTopRightRadius: 26, padding: 20, paddingTop: 12, borderWidth: 1, borderColor: C.line },
+  grabber: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.18)', marginBottom: 10 },
+  sheetX: { position: 'absolute', top: 14, right: 14, width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center', zIndex: 2 },
+  invGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 16 },
+  invItem: { width: '24%', alignItems: 'center' },
+  invIc: { width: 54, height: 54, borderRadius: 27, alignItems: 'center', justifyContent: 'center' },
+  invIcTxt: { color: '#fff', fontSize: 19, fontWeight: '900' },
+  invLb: { color: C.txt, fontSize: 11.5, marginTop: 6, fontWeight: '600' },
+  repRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 15, borderRadius: 14, backgroundColor: C.card, marginBottom: 8, borderWidth: 1, borderColor: C.line },
+  statRow: { flexDirection: 'row', gap: 10, marginTop: 6, marginBottom: 16 },
+  stat: { flex: 1, padding: 14, borderRadius: 16, backgroundColor: C.card, borderWidth: 1, borderColor: C.line },
+  statN: { color: C.txt, fontSize: 22, fontWeight: '900' },
+  myCard: { borderRadius: 20, overflow: 'hidden', backgroundColor: C.card, borderWidth: 1, borderColor: C.line, marginBottom: 16 },
+  myImg: { width: '100%', aspectRatio: 1.25, backgroundColor: '#000' },
+  myPaws: { position: 'absolute', left: 10, bottom: 10, flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 14 },
+  tag: { color: C.txt, fontSize: 12, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.07)', overflow: 'hidden' },
+  editTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: C.line },
 });
