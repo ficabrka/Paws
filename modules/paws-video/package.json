@@ -1,0 +1,7 @@
+{
+  "name": "paws-video",
+  "version": "1.0.0",
+  "description": "Speeds up and shrinks short pet videos on Android (Media3 Transformer).",
+  "main": "index.js",
+  "private": true
+}

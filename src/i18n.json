@@ -275,7 +275,13 @@
    "bonus_done": "Besplatni bonus je iskorišćen za ovu objavu",
    "boost_paid": "Ili plati isticanje",
    "boost_pay": "Plati i istakni",
-   "pay_soon": "Plaćanje se uključuje kada aplikacija izađe na Google Play. Do tada koristi besplatni bonus sa 5 prijatelja."
+   "pay_soon": "Plaćanje se uključuje kada aplikacija izađe na Google Play. Do tada koristi besplatni bonus sa 5 prijatelja.",
+   "up_pick2": "Izaberi sliku ili video (do 10 s)",
+   "vid_wait": "Pripremam video…",
+   "vid_wait2": "Duži od 3 s se ubrzava na tačno 3 sekunde",
+   "vid_long": "Video može da traje najviše 10 sekundi. Skrati ga u galeriji pa probaj ponovo.",
+   "vid_err": "Video nije mogao da se obradi. Probaj drugi video.",
+   "vid_sped": "⚡ Ubrzano {x}× · 3 s"
   },
   "en": {
    "nav_how": "How it works",
@@ -552,7 +558,13 @@
    "bonus_done": "The free bonus has been used for this post",
    "boost_paid": "Or pay to boost",
    "boost_pay": "Pay and boost",
-   "pay_soon": "Payment turns on when the app is released on Google Play. Until then, use the free bonus with 5 friends."
+   "pay_soon": "Payment turns on when the app is released on Google Play. Until then, use the free bonus with 5 friends.",
+   "up_pick2": "Pick a photo or a video (up to 10 s)",
+   "vid_wait": "Preparing the video…",
+   "vid_wait2": "Longer than 3 s is sped up to exactly 3 seconds",
+   "vid_long": "A video can be at most 10 seconds long. Trim it in your gallery and try again.",
+   "vid_err": "The video could not be processed. Try another video.",
+   "vid_sped": "⚡ Sped up {x}× · 3 s"
   },
   "de": {
    "nav_how": "So funktioniert's",

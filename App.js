@@ -12,6 +12,10 @@ import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { decode } from 'base64-arraybuffer';
 import * as Clipboard from 'expo-clipboard';
+import { VideoView, useVideoPlayer } from 'expo-video';
+import { getThumbnailAsync } from 'expo-video-thumbnails';
+import { File as FsFile } from 'expo-file-system';
+import { processVideo, videoSupported } from './modules/paws-video';
 import Detector from './src/Detector';
 import INTRO from './src/introFrames';
 import {
@@ -25,14 +29,15 @@ const GRAD = [C.g1, C.g2];
 const PAGE = 15;
 const PET_FIELDS = 'id,owner_id,name,category,city,country_code,caption,photo_path,paws_count,featured_until,credit,created_at,contact_phone,contact_apps,song_id,song_title,song_artist,song_cover';
 const PET_FIELDS_OLD = 'id,owner_id,name,category,city,country_code,caption,photo_path,paws_count,featured_until,credit,created_at';
-const PET_FIELDS_V3 = PET_FIELDS + ',link_paws,invite_bonus_at';
+const PET_FIELDS_ALL = PET_FIELDS + ',video_path,link_paws,invite_bonus_at';
 const FEET = require('./assets/feet.png');
 const PHONE_RE = /^\+?[0-9 ()./-]{6,22}$/;
 
 // Select pets; if the v2 columns are not in the database yet, fall back to the old column list.
-async function selectPets(build, fields = PET_FIELDS) {
-  let r = await build(supabase.from('pets').select(fields));
-  if (r.error && fields !== PET_FIELDS && /column|schema/i.test(r.error.message || '')) r = await build(supabase.from('pets').select(PET_FIELDS));
+async function selectPets(build) {
+  // newest columns first; older databases (SQL not run yet) fall back step by step
+  let r = await build(supabase.from('pets').select(PET_FIELDS_ALL));
+  if (r.error && /column|schema/i.test(r.error.message || '')) r = await build(supabase.from('pets').select(PET_FIELDS));
   if (r.error && /column|schema/i.test(r.error.message || '')) r = await build(supabase.from('pets').select(PET_FIELDS_OLD));
   return r;
 }
@@ -40,6 +45,12 @@ async function selectPets(build, fields = PET_FIELDS) {
 /* Two elephant footprints: the Paws mark, used everywhere instead of the dog-paw emoji. */
 function Feet({ size = 22, color = '#fff', style }) {
   return <Image source={FEET} style={[{ width: size, height: size }, style]} tintColor={color} contentFit="contain" />;
+}
+
+/* Short pet video: plays in a loop without sound. Mounted only while on screen. */
+function LoopVideo({ uri, style }) {
+  const player = useVideoPlayer(uri, (pl) => { pl.loop = true; pl.muted = true; pl.play(); });
+  return <VideoView player={player} style={style} contentFit="contain" nativeControls={false} pointerEvents="none" />;
 }
 
 /* ======================================================================= */
@@ -434,7 +445,7 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
           onViewableItemsChanged={onViewable}
           viewabilityConfig={viewCfg}
           renderItem={({ item: p }) => (
-            <Slide p={p} h={h} t={t} lang={lang} on={liked.has(p.id)} burst={burst === p.id} sound={sound}
+            <Slide p={p} h={h} t={t} lang={lang} playing={active === p.id && !paused} on={liked.has(p.id)} burst={burst === p.id} sound={sound}
               onTap={() => onTap(p)} onPaw={() => togglePaw(p)} onShare={() => setInviteP(p)}
               onReport={() => setReportP(p)} onContact={() => contactOwner(t, p)} onSound={toggleSound} />
           )}
@@ -460,7 +471,7 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
   );
 }
 
-function Slide({ p, h, t, lang, on, burst, sound, onTap, onPaw, onShare, onReport, onContact, onSound }) {
+function Slide({ p, h, t, lang, playing, on, burst, sound, onTap, onPaw, onShare, onReport, onContact, onSound }) {
   const n = p.paws_count || 0, l = levelOf(n), next = LEVELS[l + 1];
   const uri = photoUrl(p.photo_path);
   return (
@@ -468,7 +479,8 @@ function Slide({ p, h, t, lang, on, burst, sound, onTap, onPaw, onShare, onRepor
       <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={30} />
       <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.35)' }]} />
       <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="contain" transition={200} />
-      <LinearGradient colors={['transparent', 'rgba(0,0,0,0.85)']} style={s.fade} />
+      {!!p.video_path && playing && <LoopVideo uri={photoUrl(p.video_path)} style={StyleSheet.absoluteFill} />}
+      <LinearGradient colors={['transparent', 'rgba(0,0,0,0.85)']} style={s.fade} pointerEvents="none" />
       {burst && <View style={s.burst}><Feet size={130} /></View>}
       <View style={s.meta}>
         {p._featured && <View style={s.badgeFeat}><Text style={s.badgeFeatTxt}>{t('featured')}</Text></View>}
@@ -543,6 +555,7 @@ function PetView({ p, t, lang, uid, onClose }) {
           <Image source={{ uri: photoUrl(p.photo_path) }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={30} />
           <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.35)' }]} />
           <Image source={{ uri: photoUrl(p.photo_path) }} style={StyleSheet.absoluteFill} contentFit="contain" transition={150} />
+          {!!p.video_path && <LoopVideo uri={photoUrl(p.video_path)} style={StyleSheet.absoluteFill} />}
           <Pressable onPress={onClose} style={s.closeX}><Text style={{ color: '#fff', fontSize: 20, fontWeight: '800' }}>✕</Text></Pressable>
         </View>
         <ScrollView style={{ flex: 1, backgroundColor: C.bg }} contentContainerStyle={{ padding: 18, paddingBottom: insets.bottom + 24 }}>
@@ -854,9 +867,21 @@ function Post({ t, lang, uid, detector, onDone }) {
   async function runCheck(small) {
     setCheck('wait');
     try {
-      const res = await detector.current.detect(small);
-      if (!res.ok) throw new Error(res.error);
-      const result = { animal: res.animal, conf: res.conf, cls: res.cls, cat: res.animal ? catOfClass(res.cls) : null };
+      let result;
+      if (Array.isArray(small)) {
+        // video: 3 frames, an animal must be on at least 2 of them
+        const rs = [];
+        for (const f of small) { const r = await detector.current.detect(f); if (!r.ok) throw new Error(r.error); rs.push(r); }
+        const yes = rs.filter((r) => r.animal);
+        if (yes.length >= 2) {
+          const best = yes.reduce((a, b) => (b.conf > a.conf ? b : a));
+          result = { animal: true, conf: yes.reduce((a, r) => a + r.conf, 0) / yes.length, cls: best.cls, cat: catOfClass(best.cls) };
+        } else result = { animal: false, conf: rs[1].conf, cls: rs[1].cls, cat: null };
+      } else {
+        const res = await detector.current.detect(small);
+        if (!res.ok) throw new Error(res.error);
+        result = { animal: res.animal, conf: res.conf, cls: res.cls, cat: res.animal ? catOfClass(res.cls) : null };
+      }
       setCheck(result);
       if (result.animal) setCat(result.cat);
     } catch (e) {
@@ -867,23 +892,51 @@ function Post({ t, lang, uid, detector, onDone }) {
     setErr(null);
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) { Alert.alert('Paws', t('perm')); return; }
-    const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
+    const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: videoSupported ? ['images', 'videos'] : ['images'], quality: 1, videoMaxDuration: 10 });
     if (r.canceled || !r.assets?.[0]) return;
     const a = r.assets[0];
+    if (a.type === 'video') { pickVideo(a); return; }
     const scale = Math.min(1, 1080 / Math.max(a.width || 1080, a.height || 1080));
     const m = await manipulateAsync(a.uri, scale < 1 ? [{ resize: { width: Math.round((a.width || 1080) * scale) } }] : [], { compress: 0.82, format: SaveFormat.JPEG, base64: true });
     const small = await manipulateAsync(m.uri, [{ resize: { width: 448 } }], { compress: 0.9, format: SaveFormat.JPEG, base64: true });
     setImg({ uri: m.uri, b64: m.base64, small: small.base64 });
     runCheck(small.base64);
   }
+  // Video up to 10 s; anything longer than 3 s is sped up so it lasts exactly 3 s. No sound, 720p.
+  async function pickVideo(a) {
+    const dur = a.duration || 0;
+    if (dur > 10500) { setImg(null); setCheck(null); setErr(t('vid_long')); return; }
+    setImg(null); setCheck('video');
+    try {
+      const speed = dur > 3100 ? dur / 3000 : 1;
+      const v = await processVideo(a.uri, speed, 720);
+      const len = v.durationMs > 0 ? v.durationMs : Math.min(dur || 3000, 3000);
+      const frames = [];
+      for (const f of [0.15, 0.5, 0.85]) frames.push(await getThumbnailAsync(v.uri, { time: Math.round(len * f), quality: 0.9 }));
+      const pw = Math.min(1080, frames[1].width || 1080);
+      const poster = await manipulateAsync(frames[1].uri, [{ resize: { width: pw } }], { compress: 0.82, format: SaveFormat.JPEG, base64: true });
+      const smalls = [];
+      for (const f of frames) smalls.push((await manipulateAsync(f.uri, [{ resize: { width: 448 } }], { compress: 0.9, format: SaveFormat.JPEG, base64: true })).base64);
+      setImg({ uri: poster.uri, b64: poster.base64, small: smalls, video: v, speed: speed > 1.01 ? speed : null });
+      runCheck(smalls);
+    } catch (e) { setCheck(null); setErr(t('vid_err')); }
+  }
 
   async function publish() {
-    if (!img || !check || check === 'wait' || !check.animal) { setErr(t('err_img')); return; }
+    if (!img || !check || check === 'wait' || check === 'video' || !check.animal) { setErr(t('err_img')); return; }
     if (!name.trim()) { setErr(t('err_name')); return; }
     if (cOn && !PHONE_RE.test(phone.trim())) { setErr(t('err_phone')); return; }
     setBusy(true); setErr(null);
     try {
-      const path = `${uid}/${Date.now()}.jpg`;
+      const stamp = Date.now();
+      const path = `${uid}/${stamp}.jpg`;
+      let vpath = null;
+      if (img.video) {
+        vpath = `${uid}/${stamp}.mp4`;
+        const bytes = await new FsFile(img.video.uri).arrayBuffer();
+        const vu = await supabase.storage.from('pet-photos').upload(vpath, bytes, { contentType: 'video/mp4' });
+        if (vu.error) throw new Error(/mime|type|size/i.test(vu.error.message || '') ? t('need_db') : vu.error.message);
+      }
       const up = await supabase.storage.from('pet-photos').upload(path, decode(img.b64), { contentType: 'image/jpeg' });
       if (up.error) throw up.error;
       const row = {
@@ -891,11 +944,12 @@ function Post({ t, lang, uid, detector, onDone }) {
         caption: caption.trim().slice(0, 120) || null, photo_path: path,
         ai_label: String(check.cls), ai_confidence: Math.min(1, check.conf),
       };
+      if (vpath) row.video_path = vpath;
       if (song) Object.assign(row, { song_id: song.id, song_title: song.title.slice(0, 80), song_artist: song.artist.slice(0, 80), song_cover: song.cover });
       if (cOn) Object.assign(row, { contact_phone: phone.trim(), contact_apps: apps.length ? apps : ['call'] });
       const { data: ins, error } = await supabase.from('pets').insert(row).select('id').single();
       if (error) {
-        supabase.storage.from('pet-photos').remove([path]).catch(() => {});
+        supabase.storage.from('pet-photos').remove(vpath ? [path, vpath] : [path]).catch(() => {});
         if (/not_an_animal/.test(error.message || '')) { setCheck({ animal: false }); throw new Error(t('ai_no')); }
         if (/column/.test(error.message || '')) throw new Error(t('need_db'));
         throw error;
@@ -914,10 +968,13 @@ function Post({ t, lang, uid, detector, onDone }) {
       <Text style={[s.mutTxt, { marginBottom: 14, textAlign: 'left' }]}>{t('up_sub')}</Text>
       <Pressable onPress={pick} style={s.drop}>
         {img ? <Image source={{ uri: img.uri }} style={StyleSheet.absoluteFill} contentFit="cover" />
-          : <><Text style={{ fontSize: 34 }}>📷</Text><Text style={[s.mutTxt, { marginTop: 6, fontWeight: '700' }]}>{t('up_pick')}</Text></>}
+          : <><Text style={{ fontSize: 34 }}>📷{videoSupported ? ' 🎬' : ''}</Text><Text style={[s.mutTxt, { marginTop: 6, fontWeight: '700' }]}>{videoSupported ? t('up_pick2') : t('up_pick')}</Text></>}
+        {img?.video && <LoopVideo uri={img.video.uri} style={StyleSheet.absoluteFill} />}
+        {img?.video && <View style={s.vidBadge}><Text style={s.giTxt}>{img.speed ? t('vid_sped', { x: img.speed.toFixed(1) }) : '▶ ' + Math.round((img.video.durationMs || 3000) / 1000) + ' s'}</Text></View>}
       </Pressable>
+      {check === 'video' && <View style={[s.ai, s.aiWait]}><ActivityIndicator color="#fff" /><Text style={s.aiTxt}>{t('vid_wait')}{'\n'}<Text style={s.aiSmall}>{t('vid_wait2')}</Text></Text></View>}
       {check === 'wait' && <View style={[s.ai, s.aiWait]}><ActivityIndicator color="#fff" /><Text style={s.aiTxt}>{t('ai_wait')}{'\n'}<Text style={s.aiSmall}>{t('ai_wait2')}</Text></Text></View>}
-      {check && check !== 'wait' && (check.error
+      {check && check !== 'wait' && check !== 'video' && (check.error
         ? <View style={[s.ai, s.aiNo]}><Text style={[s.aiTxt, { color: '#FF8FA8' }]}>⚠️ {t('ai_err')}{'\n'}<Text style={s.aiSmall}>{t('ai_err2')}</Text></Text>
           <Pressable onPress={() => runCheck(img.small)} style={s.pickBtn}><Text style={{ color: '#fff', fontWeight: '800' }}>↻</Text></Pressable></View>
         : check.animal
@@ -953,7 +1010,7 @@ function Post({ t, lang, uid, detector, onDone }) {
       <ContactFields t={t} on={cOn} setOn={setCOn} phone={phone} setPhone={setPhone} apps={apps} setApps={setApps} />
 
       {!!err && <Text style={[s.errTxt, { marginTop: 10, textAlign: 'left' }]}>{err}</Text>}
-      <Btn label={busy ? t('uploading') : t('publish')} onPress={publish} disabled={busy || !check || check === 'wait' || !check.animal} style={{ marginTop: 18 }} />
+      <Btn label={busy ? t('uploading') : t('publish')} onPress={publish} disabled={busy || !check || check === 'wait' || check === 'video' || !check.animal} style={{ marginTop: 18 }} />
 
       <CountryPicker visible={ccOpen} lang={lang} onClose={() => setCcOpen(false)} onPick={setCc} />
       <SongPicker visible={songOpen} t={t} onClose={() => setSongOpen(false)} onPick={(r) => { setSong(r); setSongOpen(false); }} />
@@ -974,7 +1031,7 @@ function Mine({ t, lang, uid, refreshKey, onPost, posted, clearPosted }) {
   const load = useCallback(async () => {
     setErr(null);
     try {
-      const { data, error } = await selectPets((q) => q.eq('owner_id', uid).neq('status', 'removed').order('created_at', { ascending: false }), PET_FIELDS_V3);
+      const { data, error } = await selectPets((q) => q.eq('owner_id', uid).neq('status', 'removed').order('created_at', { ascending: false }));
       if (error) throw error;
       setPets(data || []);
       const ids = (data || []).map((p) => p.id);
@@ -1011,6 +1068,7 @@ function Mine({ t, lang, uid, refreshKey, onPost, posted, clearPosted }) {
               <Pressable onPress={() => setView(p)}>
                 <Image source={{ uri: photoUrl(p.photo_path) }} style={s.myImg} contentFit="cover" transition={150} />
                 <View style={s.myPaws}><Feet size={16} /><Text style={s.giTxt}>{fmt(p.paws_count, lang)}</Text></View>
+                {!!p.video_path && <View style={s.vidBadge}><Text style={s.giTxt}>▶ 3s</Text></View>}
                 {p.status === 'hidden' && <View style={s.giHidden}><Text style={s.giTxt}>{t('status_hidden')}</Text></View>}
               </Pressable>
               <View style={{ padding: 14 }}>
@@ -1305,4 +1363,5 @@ const s = StyleSheet.create({
   planOn: { borderColor: C.g1, backgroundColor: 'rgba(255,79,123,0.10)' },
   radio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: C.mut, alignItems: 'center', justifyContent: 'center' },
   radioIn: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.g1 },
+  vidBadge: { position: 'absolute', right: 10, top: 10, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10 },
 });

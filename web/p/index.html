@@ -56,7 +56,7 @@ function render() {
   app.innerHTML = `
     <div class="photo" id="ph">
       <img class="bg" src="${photo(pet.photo_path)}" alt="">
-      <img class="fg" src="${photo(pet.photo_path)}" alt="${esc(pet.name)}">
+      ${pet.video_path ? `<video class="fg" src="${photo(pet.video_path)}" poster="${photo(pet.photo_path)}" autoplay muted loop playsinline></video>` : `<img class="fg" src="${photo(pet.photo_path)}" alt="${esc(pet.name)}">`}
       <div class="cnt"><img src="/img/feet.png" alt=""><span id="n">${fmt(pet.paws_count || 0)}</span></div>
       <div class="burst" id="burst"><img src="/img/feet.png" alt=""></div>
     </div>
@@ -113,7 +113,8 @@ async function invite() {
 
 async function load() {
   if (!id) { render(); return; }
-  let { data, error } = await SB.from('pets').select('id,name,city,country_code,caption,photo_path,paws_count,link_paws,invite_bonus_at,featured_until,status').eq('id', id).maybeSingle();
+  let { data, error } = await SB.from('pets').select('id,name,city,country_code,caption,photo_path,video_path,paws_count,link_paws,invite_bonus_at,featured_until,status').eq('id', id).maybeSingle();
+  if (error) ({ data, error } = await SB.from('pets').select('id,name,city,country_code,caption,photo_path,paws_count,link_paws,invite_bonus_at,featured_until,status').eq('id', id).maybeSingle());
   if (error) ({ data, error } = await SB.from('pets').select('id,name,city,country_code,caption,photo_path,paws_count,featured_until,status').eq('id', id).maybeSingle());
   pet = (!error && data && data.status === 'active') ? data : false;
   if (pet) {
