@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Paws — pets from all over the world</title>
+<meta name="description" content="Pets from all over the world. Vote with paws.">
+<meta property="og:title" content="Paws 🐘">
+<meta property="og:description" content="Pets from all over the world. Vote with paws.">
+<meta property="og:image" content="https://getpawsapp.com/img/icon.png">
+<meta name="theme-color" content="#0C0B10">
+<link rel="icon" href="/favicon.png">
+<link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="logo" href="/"><span class="mark"><img src="/img/feet.png" alt=""></span>Paws</a>
+  <select id="lang" aria-label="Language"></select>
+</header>
+<main>
+  <div class="hero" id="hero"></div>
+  <h1 id="h"></h1>
+  <p class="cap mut" id="p"></p>
+  <div class="steps">
+    <div class="step"><b>1</b><span id="s1"></span></div>
+    <div class="step"><b>2</b><span id="s2"></span></div>
+    <div class="step"><b>3</b><span id="s3"></span></div>
+  </div>
+  <div class="gap"></div><div class="gap"></div>
+  <a class="btn" id="dl" href="https://github.com/ficabrka/Paws/releases/latest/download/Paws.apk"></a>
+</main>
+<footer><span>© Paws · getpawsapp.com</span></footer>
+<script src="/i18n.js"></script>
+<script>
+  // the elephant turns its head
+  const hero = document.getElementById('hero'), N = 13, imgs = [];
+  for (let i = 0; i < N; i++) { const im = new Image(); im.src = `/img/e${String(i).padStart(2, '0')}.jpg`; im.alt = ''; hero.appendChild(im); imgs.push(im); }
+  let cur = -1; const t0 = performance.now();
+  (function tick(now) { const x = Math.sin((now - t0) / 1000 * Math.PI * 0.7); const i = Math.round((x + 1) / 2 * (N - 1)); if (i !== cur) { if (cur >= 0) imgs[cur].classList.remove('on'); imgs[i].classList.add('on'); cur = i; } requestAnimationFrame(tick); })(t0);
+  let lang = window.pawsLang();
+  function render() {
+    const T = (k) => window.pawsT(lang, k);
+    document.documentElement.lang = lang;
+    for (const k of ['s1', 's2', 's3']) document.getElementById(k).textContent = T(k);
+    document.getElementById('h').textContent = T('home_h');
+    document.getElementById('p').textContent = T('home_p');
+    document.getElementById('dl').textContent = '📲 ' + T('app');
+  }
+  window.pawsLangPicker(document.getElementById('lang'), lang, (l) => { lang = l; render(); });
+  render();
+</script>
+</body>
+</html>

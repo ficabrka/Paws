@@ -3,6 +3,7 @@ name: Android build
 on:
   push:
     branches: [main]
+    paths-ignore: ['web/**', '.github/workflows/pages.yml', '*.sql', 'README.md']
   workflow_dispatch:
 
 permissions:
@@ -38,7 +39,9 @@ jobs:
         run: ./gradlew assembleRelease --no-daemon
 
       - name: Rename APK
-        run: cp android/app/build/outputs/apk/release/app-release.apk Paws-${{ github.run_number }}.apk
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk Paws-${{ github.run_number }}.apk
+          cp android/app/build/outputs/apk/release/app-release.apk Paws.apk
 
       - name: Keep the APK with this run
         uses: actions/upload-artifact@v4
@@ -52,4 +55,7 @@ jobs:
           tag_name: build-${{ github.run_number }}
           name: Paws test build ${{ github.run_number }}
           body: Test APK for Android. Download it on your phone and open it to install.
-          files: Paws-${{ github.run_number }}.apk
+          make_latest: true
+          files: |
+            Paws-${{ github.run_number }}.apk
+            Paws.apk

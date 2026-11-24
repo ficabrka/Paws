@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Paws</title>
+<meta name="description" content="Pets from all over the world. Vote with paws.">
+<meta property="og:title" content="Paws 🐘">
+<meta property="og:description" content="Give a paw with one tap.">
+<meta property="og:image" content="https://getpawsapp.com/img/icon.png">
+<meta name="theme-color" content="#0C0B10">
+<link rel="icon" href="/favicon.png">
+<link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="logo" href="/"><span class="mark"><img src="/img/feet.png" alt=""></span>Paws</a>
+  <select id="lang" aria-label="Language"></select>
+</header>
+<main id="app"><p class="mut center" style="margin-top:60px">…</p></main>
+<footer><a href="/">getpawsapp.com</a></footer>
+<div class="toast" id="toast"></div>
+<script src="/i18n.js"></script>
+<script type="module">
+import { createClient } from '/sb.js';
+const SB = createClient('https://zpnpgirlfgpqsaqlpypb.supabase.co', 'sb_publishable_I9d-4Axf-hulVOCobmPGSQ_EB9DcdKT');
+const APK = 'https://github.com/ficabrka/Paws/releases/latest/download/Paws.apk';
+const photo = (p) => `https://zpnpgirlfgpqsaqlpypb.supabase.co/storage/v1/object/public/pet-photos/${p}`;
+const flag = (cc) => cc ? String.fromCodePoint(...[...cc.toUpperCase()].map((c) => 127397 + c.charCodeAt(0))) : '🌍';
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// pet id from ?id=… or from /p/<id>
+const q = new URLSearchParams(location.search);
+const m = location.pathname.match(/\/p\/([0-9a-f-]{36})/i);
+const id = q.get('id') || (m && m[1]);
+
+let lang = window.pawsLang();
+let pet = null, given = false, busy = false;
+const T = (k, v) => window.pawsT(lang, k, v);
+const fmt = (n) => { try { return new Intl.NumberFormat(lang).format(n); } catch (e) { return String(n); } };
+
+window.pawsLangPicker(document.getElementById('lang'), lang, (l) => { lang = l; render(); });
+
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('on'); setTimeout(() => t.classList.remove('on'), 2200); }
+
+function render() {
+  document.documentElement.lang = lang;
+  const app = document.getElementById('app');
+  if (!id || pet === false) { app.innerHTML = `<p class="center" style="margin:60px 0 20px;font-size:18px">${T('notfound')}</p><a class="btn" href="/">Paws</a>`; return; }
+  if (!pet) return;
+  document.title = `${pet.name} · Paws`;
+  const place = pet.city || (() => { try { return new Intl.DisplayNames([lang], { type: 'region' }).of(pet.country_code); } catch (e) { return ''; } })();
+  const lp = Math.min(pet.link_paws || 0, 5);
+  const featured = pet.featured_until && new Date(pet.featured_until) > new Date();
+  app.innerHTML = `
+    <div class="photo" id="ph">
+      <img class="bg" src="${photo(pet.photo_path)}" alt="">
+      <img class="fg" src="${photo(pet.photo_path)}" alt="${esc(pet.name)}">
+      <div class="cnt"><img src="/img/feet.png" alt=""><span id="n">${fmt(pet.paws_count || 0)}</span></div>
+      <div class="burst" id="burst"><img src="/img/feet.png" alt=""></div>
+    </div>
+    <h1>${esc(pet.name)}</h1>
+    <div class="place">${flag(pet.country_code)} ${esc(place)}</div>
+    ${pet.caption ? `<p class="cap">${esc(pet.caption)}</p>` : ''}
+    <div class="gap"></div>
+    <button class="btn ${given ? 'done' : ''}" id="paw" ${busy ? 'disabled' : ''}>${given ? T('given') : `<img src="/img/feet.png" alt="">${T('give')}`}</button>
+    ${given ? `<p class="center" style="margin-top:12px;font-weight:700">${esc(T('thanks', { name: pet.name }))}</p>` : ''}
+    <div class="box">
+      ${pet.invite_bonus_at || featured ? `<b>${esc(T('helped', { name: pet.name }))}</b>` : `<b>${esc(T('help', { name: pet.name, n: lp }))}</b><div class="bar"><i style="width:${lp * 20}%"></i></div>`}
+    </div>
+    <div class="gap"></div>
+    <button class="btn sec" id="inv">↗ ${T('invite')}</button>
+    <div class="gap"></div>
+    <a class="btn sec" href="${APK}">📲 ${T('app')}</a>
+  `;
+  document.getElementById('paw').onclick = give;
+  document.getElementById('ph').ondblclick = () => { if (!given) give(); };
+  document.getElementById('inv').onclick = invite;
+}
+
+async function ensureUser() {
+  const { data } = await SB.auth.getSession();
+  if (data?.session?.user) return data.session.user.id;
+  const { data: d2, error } = await SB.auth.signInAnonymously();
+  if (error) throw error;
+  return d2.user.id;
+}
+
+async function give() {
+  if (given || busy) return;
+  busy = true; render();
+  try {
+    const uid = await ensureUser();
+    let { error } = await SB.from('paws').insert({ pet_id: pet.id, user_id: uid, via: 'link' });
+    if (error && /via/.test(error.message || '')) ({ error } = await SB.from('paws').insert({ pet_id: pet.id, user_id: uid }));
+    if (error && error.code !== '23505') throw error;
+    given = true;
+    if (!error) pet.paws_count = (pet.paws_count || 0) + 1;
+    const { data } = await SB.from('pets').select('paws_count,link_paws,invite_bonus_at,featured_until').eq('id', pet.id).single();
+    if (data) Object.assign(pet, data);
+    busy = false; render();
+    const b = document.getElementById('burst'); b.classList.remove('go'); void b.offsetWidth; b.classList.add('go');
+  } catch (e) { busy = false; render(); toast(T('err')); }
+}
+
+async function invite() {
+  const url = `${location.origin}/p/?id=${pet.id}&l=${lang}`;
+  const text = T('share', { name: pet.name });
+  if (navigator.share) { try { await navigator.share({ text, url }); return; } catch (e) { return; } }
+  try { await navigator.clipboard.writeText(`${text} ${url}`); toast(T('copied')); } catch (e) {}
+}
+
+async function load() {
+  if (!id) { render(); return; }
+  let { data, error } = await SB.from('pets').select('id,name,city,country_code,caption,photo_path,paws_count,link_paws,invite_bonus_at,featured_until,status').eq('id', id).maybeSingle();
+  if (error) ({ data, error } = await SB.from('pets').select('id,name,city,country_code,caption,photo_path,paws_count,featured_until,status').eq('id', id).maybeSingle());
+  pet = (!error && data && data.status === 'active') ? data : false;
+  if (pet) {
+    const { data: s } = await SB.auth.getSession();
+    const u = s?.session?.user?.id;
+    if (u) { const { data: mine } = await SB.from('paws').select('pet_id').eq('pet_id', id).eq('user_id', u); given = !!(mine && mine.length); }
+  }
+  render();
+}
+load();
+</script>
+</body>
+</html>

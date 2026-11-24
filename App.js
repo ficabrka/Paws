@@ -25,12 +25,14 @@ const GRAD = [C.g1, C.g2];
 const PAGE = 15;
 const PET_FIELDS = 'id,owner_id,name,category,city,country_code,caption,photo_path,paws_count,featured_until,credit,created_at,contact_phone,contact_apps,song_id,song_title,song_artist,song_cover';
 const PET_FIELDS_OLD = 'id,owner_id,name,category,city,country_code,caption,photo_path,paws_count,featured_until,credit,created_at';
+const PET_FIELDS_V3 = PET_FIELDS + ',link_paws,invite_bonus_at';
 const FEET = require('./assets/feet.png');
 const PHONE_RE = /^\+?[0-9 ()./-]{6,22}$/;
 
 // Select pets; if the v2 columns are not in the database yet, fall back to the old column list.
-async function selectPets(build) {
-  let r = await build(supabase.from('pets').select(PET_FIELDS));
+async function selectPets(build, fields = PET_FIELDS) {
+  let r = await build(supabase.from('pets').select(fields));
+  if (r.error && fields !== PET_FIELDS && /column|schema/i.test(r.error.message || '')) r = await build(supabase.from('pets').select(PET_FIELDS));
   if (r.error && /column|schema/i.test(r.error.message || '')) r = await build(supabase.from('pets').select(PET_FIELDS_OLD));
   return r;
 }
@@ -53,7 +55,7 @@ export default function App() {
 function Root() {
   const insets = useSafeAreaInsets();
   const [lang, setLang] = useState(deviceLang());
-  const t = useMemo(() => makeT(lang), [lang]);
+  const t = useMemo(() => { const f = makeT(lang); f.lang = lang; return f; }, [lang]);
   const [uid, setUid] = useState(null);
   const [authErr, setAuthErr] = useState(null);
   const [tab, setTab] = useState('feed');
@@ -205,7 +207,9 @@ function Intro({ t, onDone }) {
 }
 
 /* ============================== shared pet actions ============================== */
-const shareText = (t, p) => `${t('share_msg', { name: p.name })} ${SHARE_BASE}${p.id}`;
+// link to the pet page on getpawsapp.com, in the sender's language
+const shareLink = (p, t) => `${SHARE_BASE}?id=${p.id}&l=${(t && t.lang) || 'en'}`;
+const shareText = (t, p) => `${t('share_msg', { name: p.name })} ${shareLink(p, t)}`;
 function contactOwner(t, p) {
   const num = (p.contact_phone || '').replace(/[^0-9+]/g, '');
   if (!num) return;
@@ -222,7 +226,10 @@ function contactOwner(t, p) {
   Alert.alert(t('contact_q'), `${p.name} · ${p.contact_phone}`, [...apps.filter((a) => btn[a]).map((a) => btn[a]), { text: t('cancel'), style: 'cancel' }]);
 }
 async function setPaw(uid, p, on) {
-  return on ? supabase.from('paws').insert({ pet_id: p.id, user_id: uid }) : supabase.from('paws').delete().eq('pet_id', p.id).eq('user_id', uid);
+  if (!on) return supabase.from('paws').delete().eq('pet_id', p.id).eq('user_id', uid);
+  const r = await supabase.from('paws').insert({ pet_id: p.id, user_id: uid, via: 'app' });
+  if (r.error && /via/.test(r.error.message || '')) return supabase.from('paws').insert({ pet_id: p.id, user_id: uid });
+  return r;
 }
 
 /* ============================== small turning elephant ============================== */
@@ -261,7 +268,6 @@ function Sheet({ visible, onClose, children }) {
 }
 
 /* ============================== invite friends ============================== */
-const shareLink = (p) => `${SHARE_BASE}${p.id}`;
 function InviteButtons({ t, p, onDone }) {
   const msg = shareText(t, p);
   const [copied, setCopied] = useState(false);
@@ -273,9 +279,9 @@ function InviteButtons({ t, p, onDone }) {
     ['WhatsApp', '#25D366', 'W', () => open(`whatsapp://send?text=${encodeURIComponent(msg)}`, `https://wa.me/?text=${encodeURIComponent(msg)}`)],
     ['Viber', '#7360F2', 'V', () => open(`viber://forward?text=${encodeURIComponent(msg)}`)],
     ['Instagram', '#E1306C', 'IG', async () => { await copy(); open('instagram://direct-inbox', 'https://www.instagram.com/direct/inbox/'); }],
-    ['Facebook', '#1877F2', 'f', () => open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareLink(p))}`)],
-    ['Messenger', '#0084FF', 'M', () => open(`fb-messenger://share/?link=${encodeURIComponent(shareLink(p))}`, `https://www.facebook.com/dialog/send?link=${encodeURIComponent(shareLink(p))}&redirect_uri=${encodeURIComponent(shareLink(p))}`)],
-    ['Telegram', '#229ED9', 'T', () => open(`tg://msg?text=${encodeURIComponent(msg)}`, `https://t.me/share/url?url=${encodeURIComponent(shareLink(p))}&text=${encodeURIComponent(msg)}`)],
+    ['Facebook', '#1877F2', 'f', () => open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareLink(p, t))}`)],
+    ['Messenger', '#0084FF', 'M', () => open(`fb-messenger://share/?link=${encodeURIComponent(shareLink(p, t))}`, `https://www.facebook.com/dialog/send?link=${encodeURIComponent(shareLink(p, t))}&redirect_uri=${encodeURIComponent(shareLink(p, t))}`)],
+    ['Telegram', '#229ED9', 'T', () => open(`tg://msg?text=${encodeURIComponent(msg)}`, `https://t.me/share/url?url=${encodeURIComponent(shareLink(p, t))}&text=${encodeURIComponent(msg)}`)],
     [copied ? t('copied') : t('copy_link'), '#3a3844', '🔗', copy],
     [t('more'), '#3a3844', '⋯', () => Share.share({ message: msg }).catch(() => {})],
   ];
@@ -962,12 +968,13 @@ function Mine({ t, lang, uid, refreshKey, onPost, posted, clearPosted }) {
   const [edit, setEdit] = useState(null);
   const [view, setView] = useState(null);
   const [invite, setInvite] = useState(null);
+  const [boost, setBoost] = useState(null);
   const [err, setErr] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const load = useCallback(async () => {
     setErr(null);
     try {
-      const { data, error } = await selectPets((q) => q.eq('owner_id', uid).neq('status', 'removed').order('created_at', { ascending: false }));
+      const { data, error } = await selectPets((q) => q.eq('owner_id', uid).neq('status', 'removed').order('created_at', { ascending: false }), PET_FIELDS_V3);
       if (error) throw error;
       setPets(data || []);
       const ids = (data || []).map((p) => p.id);
@@ -1017,8 +1024,9 @@ function Mine({ t, lang, uid, refreshKey, onPost, posted, clearPosted }) {
                 </View>
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
                   <Btn label={'✏️ ' + t('edit')} secondary onPress={() => setEdit(p)} style={{ flex: 1 }} />
-                  <Btn label={'↗ ' + t('invite')} onPress={() => setInvite(p)} style={{ flex: 1 }} />
+                  <Btn label={'↗ ' + t('invite')} secondary onPress={() => setInvite(p)} style={{ flex: 1 }} />
                 </View>
+                <Btn label={isFeatured(p) ? '⭐ ' + t('boost_on', { time: untilText(p.featured_until, lang) }) : '🚀 ' + t('boost')} onPress={() => setBoost(p)} style={{ marginTop: 10 }} />
               </View>
             </View>
           );
@@ -1028,7 +1036,56 @@ function Mine({ t, lang, uid, refreshKey, onPost, posted, clearPosted }) {
       {edit && <EditPost t={t} lang={lang} p={edit} rewards={rewards.filter((r) => r.pet_id === edit.id)} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(); }} />}
       {view && <PetView p={view} t={t} lang={lang} uid={uid} onClose={() => setView(null)} />}
       <InviteSheet t={t} p={invite} posted={invite && invite._posted} onClose={() => setInvite(null)} />
+      <BoostSheet t={t} lang={lang} p={boost} onClose={() => setBoost(null)} onInvite={(p) => { setBoost(null); setInvite(p); }} />
     </View>
+  );
+}
+
+const isFeatured = (p) => !!p.featured_until && new Date(p.featured_until) > new Date();
+const untilText = (iso, lang) => { try { return new Date(iso).toLocaleString(lang, { weekday: 'short', hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } };
+const BOOST_PLANS = [['p1', '24 h', 199], ['p2', '3 d', 449, true], ['p3', '7 d', 899]];
+
+/* Boost: free 24 h for 5 friends through the link, or a paid plan (payment comes with the Google Play release). */
+function BoostSheet({ t, lang, p, onClose, onInvite }) {
+  const [chosen, setChosen] = useState('p2');
+  const [soon, setSoon] = useState(false);
+  useEffect(() => { setSoon(false); }, [p]);
+  const lp = Math.min(p?.link_paws || 0, 5);
+  return (
+    <Sheet visible={!!p} onClose={onClose}>
+      {p && <ScrollView style={{ maxHeight: 620 }} showsVerticalScrollIndicator={false}>
+        <View style={{ alignItems: 'center' }}>
+          <LinearGradient colors={GRAD} style={[s.logoMark, { width: 56, height: 56, borderRadius: 18 }]}><Text style={{ fontSize: 28 }}>🚀</Text></LinearGradient>
+          <Text style={[s.sheetH, { marginTop: 10, textAlign: 'center' }]}>{t('boost_h', { name: p.name })}</Text>
+          <Text style={[s.mutTxt, { marginTop: 4 }]}>{t('boost_p')}</Text>
+          {isFeatured(p) && <Text style={[s.rowName, { color: C.ok, marginTop: 8 }]}>⭐ {t('boost_on', { time: untilText(p.featured_until, lang) })}</Text>}
+        </View>
+
+        <View style={[s.box, { borderColor: 'rgba(61,220,151,0.35)' }]}>
+          <Text style={s.rowName}>🎁 {t('bonus_h')}</Text>
+          <Text style={[s.rowSub, { marginTop: 4, lineHeight: 18 }]}>{t('bonus_p')}</Text>
+          {p.invite_bonus_at ? <Text style={[s.rowName, { color: C.ok, marginTop: 10 }]}>✓ {t('bonus_done')}</Text> : <>
+            <View style={[s.msBar, { marginTop: 12, height: 8, flex: 0 }]}><LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ height: '100%', width: `${lp * 20}%` }} /></View>
+            <Text style={[s.rowSub, { marginTop: 6 }]}>{t('bonus_n', { n: lp })}</Text>
+            <Btn label={'↗ ' + t('invite')} onPress={() => onInvite(p)} style={{ marginTop: 10 }} />
+          </>}
+        </View>
+
+        <Text style={s.secH}>{t('boost_paid')}</Text>
+        {BOOST_PLANS.map(([k, len, price, best]) => (
+          <Pressable key={k} onPress={() => setChosen(k)} style={[s.plan, chosen === k && s.planOn]}>
+            <View style={[s.radio, chosen === k && { borderColor: C.g1 }]}>{chosen === k && <View style={s.radioIn} />}</View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.rowName}>{t(k)}{best ? '  ' : ''}{best && <Text style={{ color: C.g2, fontSize: 12 }}>★ {t('p2b')}</Text>}</Text>
+              <Text style={s.rowSub}>{t(k + 'a')}</Text>
+            </View>
+            <Text style={[s.rowName, { fontSize: 16 }]}>{fmt(price, lang)} RSD</Text>
+          </Pressable>
+        ))}
+        <Btn label={t('boost_pay')} onPress={() => setSoon(true)} style={{ marginTop: 8 }} />
+        {soon && <Text style={[s.rowSub, { marginTop: 10, textAlign: 'center', color: C.g2, lineHeight: 18 }]}>{t('pay_soon')}</Text>}
+      </ScrollView>}
+    </Sheet>
   );
 }
 
@@ -1244,4 +1301,8 @@ const s = StyleSheet.create({
   myPaws: { position: 'absolute', left: 10, bottom: 10, flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 14 },
   tag: { color: C.txt, fontSize: 12, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.07)', overflow: 'hidden' },
   editTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: C.line },
+  plan: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16, backgroundColor: C.card, borderWidth: 1, borderColor: C.line, marginBottom: 8 },
+  planOn: { borderColor: C.g1, backgroundColor: 'rgba(255,79,123,0.10)' },
+  radio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: C.mut, alignItems: 'center', justifyContent: 'center' },
+  radioIn: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.g1 },
 });
