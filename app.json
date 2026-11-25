@@ -2,7 +2,7 @@
   "expo": {
     "name": "Paws",
     "slug": "paws",
-    "version": "1.4.0",
+    "version": "1.6.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -13,7 +13,7 @@
     },
     "android": {
       "package": "com.getpawsapp.paws",
-      "versionCode": 3,
+      "versionCode": 4,
       "adaptiveIcon": {
         "backgroundColor": "#FF6B60",
         "foregroundImage": "./assets/android-icon-foreground.png",

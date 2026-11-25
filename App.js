@@ -377,6 +377,252 @@ function ReportSheet({ t, p, uid, onClose }) {
   );
 }
 
+/* ============================== PET OF THE MONTH award ============================== */
+// The award frame is drawn by the app from the database (monthly_winners), never baked into the photo.
+const GOLD = ['#F7D774', '#E0A12E'];
+async function loadAwards(ids) {
+  if (!ids.length) return {};
+  const { data, error } = await supabase.from('monthly_winners').select('pet_id,city,month_start').in('pet_id', ids).order('month_start', { ascending: false });
+  if (error || !data) return {};
+  const out = {};
+  data.forEach((w) => { if (!out[w.pet_id]) out[w.pet_id] = w; });
+  return out;
+}
+const monthLabel = (iso, lang) => { try { return new Date(iso + 'T00:00:00Z').toLocaleDateString(lang, { month: 'long', year: 'numeric', timeZone: 'UTC' }); } catch (e) { return iso; } };
+function AwardFrame({ award, t, lang, top = 64 }) {
+  if (!award) return null;
+  return (
+    <>
+      <View pointerEvents="none" style={[StyleSheet.absoluteFill, s.awardBorder]} />
+      <View pointerEvents="none" style={[s.awardChipWrap, { top }]}>
+        <LinearGradient colors={GOLD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.awardChip}>
+          <Text style={s.awardTxt} numberOfLines={1}>🏆 {t('award_h')} · {award.city} · {monthLabel(award.month_start, lang)}</Text>
+          <View style={s.awardOk}><Text style={{ color: '#fff', fontSize: 10, fontWeight: '900' }}>✓</Text></View>
+        </LinearGradient>
+      </View>
+    </>
+  );
+}
+
+/* ============================== ADS in the feed ============================== */
+const rsd = (n, lang) => { try { return new Intl.NumberFormat(lang).format(n); } catch (e) { return String(n); } };
+const AD_EVERY = 6; // one ad after every 6 pets
+const AD_PLANS = [['7d', 7, 1500, 3000], ['30d', 30, 4900, 9900], ['90d', 90, 11900, 23900]]; // RSD: city, whole country
+const PAY_TERMS = ['standard', 'invoice', 'installments', 'shelter', 'custom'];
+
+function AdSlide({ ad, h, t, lang, onCreate, onClick }) {
+  if (!ad) {
+    // nobody has bought this spot yet: invite businesses to place their own ad
+    return (
+      <LinearGradient colors={['#1d1622', '#2a1520', '#241a12']} style={{ height: h, justifyContent: 'center', padding: 24 }}>
+        <Text style={s.adLabel}>{t('ad_label')}</Text>
+        <Text style={[s.welcomeH, { fontSize: 30 }]}>{t('ad_empty_h')}</Text>
+        <Text style={[s.mutTxt, { textAlign: 'left', marginTop: 10, lineHeight: 21 }]}>{t('ad_empty_p')}</Text>
+        <View style={[s.box, { marginTop: 18 }]}>
+          {AD_PLANS.map(([k, d, city, country]) => (
+            <View key={k} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 }}>
+              <Text style={s.rowName}>{t('ad_' + k)}</Text>
+              <Text style={[s.rowSub, { color: C.txt }]}>{rsd(city, lang)} / {rsd(country, lang)} RSD</Text>
+            </View>
+          ))}
+          <Text style={[s.rowSub, { marginTop: 6 }]}>{t('ad_price_note')}</Text>
+        </View>
+        <Btn label={'📣 ' + t('ad_create')} onPress={onCreate} style={{ marginTop: 18 }} />
+      </LinearGradient>
+    );
+  }
+  const go = (url) => { onClick(); Linking.openURL(url).catch(() => {}); };
+  const link = ad.link ? (/^https?:\/\//i.test(ad.link) ? ad.link : 'https://' + ad.link) : null;
+  return (
+    <View style={{ height: h, backgroundColor: '#000' }}>
+      {ad.image_path ? <>
+        <Image source={{ uri: photoUrl(ad.image_path) }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={30} />
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.35)' }]} />
+        <Image source={{ uri: photoUrl(ad.image_path) }} style={StyleSheet.absoluteFill} contentFit="contain" />
+      </> : <LinearGradient colors={GRAD} style={StyleSheet.absoluteFill} />}
+      <LinearGradient colors={['transparent', 'rgba(0,0,0,0.9)']} style={s.fade} pointerEvents="none" />
+      <View style={[s.adTag]}><Text style={s.adTagTxt}>{t('ad_label')}</Text></View>
+      <View style={[s.meta, { right: 18 }]}>
+        <Text style={s.rowSub}>{ad.business}</Text>
+        <Text style={s.petName}>{ad.title}</Text>
+        {!!ad.body && <Text style={s.caption}>{ad.body}</Text>}
+        <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+          {link && <Btn label={'🔗 ' + t('ad_visit')} onPress={() => go(link)} style={{ flex: 1 }} />}
+          {!!ad.phone && <Btn label={'📞 ' + t('c_call')} secondary onPress={() => go('tel:' + ad.phone.replace(/[^0-9+]/g, ''))} style={{ flex: 1 }} />}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function AdForm({ t, lang, uid, onClose, onSaved }) {
+  const insets = useSafeAreaInsets();
+  const [place] = usePlace();
+  const [business, setBusiness] = useState('');
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [link, setLink] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [scope, setScope] = useState('city');
+  const [city, setCity] = useState(place.city || '');
+  const [plan, setPlan] = useState('30d');
+  const [terms, setTerms] = useState('standard');
+  const [note, setNote] = useState('');
+  const [img, setImg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [done, setDone] = useState(false);
+  const price = (() => { const p = AD_PLANS.find((x) => x[0] === plan); return scope === 'city' ? p[2] : p[3]; })();
+  async function pickImg() {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) return;
+    const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
+    if (r.canceled || !r.assets?.[0]) return;
+    const a = r.assets[0];
+    const m = await manipulateAsync(a.uri, (a.width || 0) > 1080 ? [{ resize: { width: 1080 } }] : [], { compress: 0.82, format: SaveFormat.JPEG, base64: true });
+    setImg(m);
+  }
+  async function submit() {
+    if (!business.trim() || !title.trim()) { setErr(t('ad_err_req')); return; }
+    if (!phone.trim() && !email.trim()) { setErr(t('ad_err_contact')); return; }
+    if (scope === 'city' && !city.trim()) { setErr(t('city_need')); return; }
+    if (terms === 'custom' && !note.trim()) { setErr(t('ad_err_note')); return; }
+    setBusy(true); setErr(null);
+    try {
+      let image_path = null;
+      if (img) {
+        image_path = `${uid}/ads/${Date.now()}.jpg`;
+        const up = await supabase.storage.from('pet-photos').upload(image_path, decode(img.base64), { contentType: 'image/jpeg' });
+        if (up.error) throw up.error;
+      }
+      const { error } = await supabase.from('ads').insert({
+        owner_id: uid, business: business.trim().slice(0, 40), title: title.trim().slice(0, 60), body: body.trim().slice(0, 160) || null,
+        link: link.trim().slice(0, 200) || null, phone: phone.trim().slice(0, 22) || null, email: email.trim().slice(0, 80) || null,
+        country_code: place.cc, city: scope === 'city' ? city.trim().slice(0, 40) : null, plan, pay_terms: terms, terms_note: note.trim().slice(0, 300) || null,
+        price_rsd: terms === 'shelter' ? 0 : price, image_path,
+      });
+      if (error) throw new Error(/relation|schema|column/i.test(error.message || '') ? t('need_db') : error.message);
+      setDone(true);
+    } catch (e) { setErr(e?.message || t('err_net')); }
+    setBusy(false);
+  }
+  return (
+    <Modal visible animationType="slide" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: C.bg, paddingTop: insets.top }}>
+        <View style={s.editTop}>
+          <Pressable onPress={onClose} hitSlop={12}><Text style={{ color: C.txt, fontSize: 16, fontWeight: '700' }}>✕ {t('close')}</Text></Pressable>
+          <Text style={[s.rowName, { fontSize: 16 }]}>{t('ad_create')}</Text>
+          <View style={{ width: 60 }} />
+        </View>
+        {done ? (
+          <View style={[s.center, { padding: 28 }]}>
+            <Elephant width={200} />
+            <Text style={[s.sheetH, { marginTop: 16, textAlign: 'center' }]}>{t('ad_sent_h')}</Text>
+            <Text style={[s.mutTxt, { marginTop: 8, lineHeight: 21 }]}>{t('ad_sent_p')}</Text>
+            <Btn label={t('close')} onPress={() => { onSaved && onSaved(); onClose(); }} style={{ marginTop: 22, alignSelf: 'stretch' }} />
+          </View>
+        ) : (
+          <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40 }} keyboardShouldPersistTaps="handled">
+            <Text style={[s.mutTxt, { textAlign: 'left' }]}>{t('ad_form_p')}</Text>
+            <Pressable onPress={pickImg} style={[s.drop, { height: 190, marginTop: 14 }]}>
+              {img ? <Image source={{ uri: img.uri }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                : <><Text style={{ fontSize: 30 }}>🖼️</Text><Text style={[s.mutTxt, { marginTop: 6, fontWeight: '700' }]}>{t('ad_img')}</Text></>}
+            </Pressable>
+            <Label>{t('ad_business')} *</Label>
+            <TextInput value={business} onChangeText={setBusiness} maxLength={40} style={s.input} />
+            <Label>{t('ad_title')} *</Label>
+            <TextInput value={title} onChangeText={setTitle} maxLength={60} style={s.input} placeholder={t('ad_title_ph')} placeholderTextColor={C.mut} />
+            <Label>{t('ad_body')}</Label>
+            <TextInput value={body} onChangeText={setBody} maxLength={160} style={s.input} multiline />
+            <Label>{t('ad_link')}</Label>
+            <TextInput value={link} onChangeText={setLink} maxLength={200} style={s.input} autoCapitalize="none" keyboardType="url" placeholder="www…" placeholderTextColor={C.mut} />
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <View style={{ flex: 1 }}><Label>{t('contact_phone')}</Label><TextInput value={phone} onChangeText={setPhone} keyboardType="phone-pad" maxLength={22} style={s.input} /></View>
+              <View style={{ flex: 1 }}><Label>E-mail</Label><TextInput value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" maxLength={80} style={s.input} /></View>
+            </View>
+
+            <Label>{t('ad_where')}</Label>
+            <View style={s.catWrap}>
+              {['city', 'country'].map((k) => (
+                <Pressable key={k} onPress={() => setScope(k)} style={[s.catBtn, scope === k && s.catOn]}><Text style={s.catTxt}>{k === 'city' ? '🏙️ ' + t('top_city') : flagOf(place.cc) + ' ' + countryName(place.cc, lang)}</Text></Pressable>
+              ))}
+            </View>
+            {scope === 'city' && <TextInput value={city} onChangeText={setCity} maxLength={40} placeholder={t('city_ph')} placeholderTextColor={C.mut} style={s.input} />}
+
+            <Text style={s.secH}>{t('ad_plan')}</Text>
+            {AD_PLANS.map(([k, d, pc, pn]) => (
+              <Pressable key={k} onPress={() => setPlan(k)} style={[s.plan, plan === k && s.planOn]}>
+                <View style={[s.radio, plan === k && { borderColor: C.g1 }]}>{plan === k && <View style={s.radioIn} />}</View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.rowName}>{t('ad_' + k)}{k === '30d' ? <Text style={{ color: C.g2, fontSize: 12 }}>  ★ {t('p2b')}</Text> : null}</Text>
+                  <Text style={s.rowSub}>{t('ad_' + k + 'a')}</Text>
+                </View>
+                <Text style={[s.rowName, { fontSize: 15 }]}>{rsd(scope === 'city' ? pc : pn, lang)} RSD</Text>
+              </Pressable>
+            ))}
+
+            <Text style={s.secH}>{t('ad_terms')}</Text>
+            {PAY_TERMS.map((k) => (
+              <Pressable key={k} onPress={() => setTerms(k)} style={[s.plan, terms === k && s.planOn]}>
+                <View style={[s.radio, terms === k && { borderColor: C.g1 }]}>{terms === k && <View style={s.radioIn} />}</View>
+                <View style={{ flex: 1 }}><Text style={s.rowName}>{t('pt_' + k)}</Text><Text style={s.rowSub}>{t('pt_' + k + 'a')}</Text></View>
+              </Pressable>
+            ))}
+            {(terms === 'custom' || terms === 'invoice' || terms === 'shelter') && (
+              <TextInput value={note} onChangeText={setNote} maxLength={300} multiline placeholder={t('pt_note_ph_' + terms)} placeholderTextColor={C.mut} style={[s.input, { minHeight: 70 }]} />
+            )}
+
+            <View style={[s.box, { flexDirection: 'row', alignItems: 'center' }]}>
+              <Text style={[s.rowName, { flex: 1 }]}>{t('ad_total')}</Text>
+              <Text style={[s.statN, { fontSize: 20 }]}>{terms === 'shelter' ? t('pt_free') : `${rsd(price, lang)} RSD`}</Text>
+            </View>
+            {!!err && <Text style={[s.errTxt, { marginTop: 10, textAlign: 'left' }]}>{err}</Text>}
+            <Btn label={busy ? '…' : t('ad_send')} onPress={submit} disabled={busy} style={{ marginTop: 16 }} />
+            <Text style={[s.rowSub, { marginTop: 10, textAlign: 'center', lineHeight: 18 }]}>{t('ad_review_note')}</Text>
+          </ScrollView>
+        )}
+      </View>
+    </Modal>
+  );
+}
+
+function MyAds({ t, lang, uid, refreshKey }) {
+  const [ads, setAds] = useState(null);
+  const [form, setForm] = useState(false);
+  const load = useCallback(async () => {
+    const { data, error } = await supabase.from('ads').select('*').eq('owner_id', uid).order('created_at', { ascending: false });
+    setAds(error ? [] : data || []);
+  }, [uid]);
+  useEffect(() => { load(); }, [load, refreshKey]);
+  const status = (a) => {
+    if (a.status === 'active' && a.active_until && new Date(a.active_until) > new Date()) return ['🟢', t('ads_active', { date: new Date(a.active_until).toLocaleDateString(lang) })];
+    if (a.status === 'rejected') return ['🔴', t('ads_rejected')];
+    if (a.status === 'pending') return ['🟡', t('ads_pending')];
+    return ['⚪', t('ads_ended')];
+  };
+  return (
+    <View style={{ marginTop: 10 }}>
+      <Text style={s.secH}>📣 {t('my_ads')}</Text>
+      {(ads || []).map((a) => {
+        const [dot, label] = status(a);
+        return (
+          <View key={a.id} style={[s.row, { alignItems: 'flex-start' }]}>
+            {a.image_path ? <Image source={{ uri: photoUrl(a.image_path) }} style={s.rowImg} contentFit="cover" /> : <View style={[s.rowImg, { alignItems: 'center', justifyContent: 'center', backgroundColor: C.card }]}><Text>📣</Text></View>}
+            <View style={{ flex: 1 }}>
+              <Text style={s.rowName} numberOfLines={1}>{a.title}</Text>
+              <Text style={s.rowSub}>{dot} {label}</Text>
+              <Text style={s.rowSub}>{t('ad_' + a.plan)} · {a.city || countryName(a.country_code, lang)} · 👁 {fmt(a.views || 0, lang)} · 👆 {fmt(a.clicks || 0, lang)}</Text>
+            </View>
+          </View>
+        );
+      })}
+      <Btn label={'+ ' + t('ad_create')} secondary onPress={() => setForm(true)} />
+      {form && <AdForm t={t} lang={lang} uid={uid} onClose={() => setForm(false)} onSaved={load} />}
+    </View>
+  );
+}
+
 /* ============================== FEED ============================== */
 function Feed({ t, lang, uid, refreshKey, paused }) {
   const [cat, setCat] = useState('svi');
@@ -392,9 +638,31 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
   const [sound, setSound] = useState(true);
   const [reportP, setReportP] = useState(null);
   const [inviteP, setInviteP] = useState(null);
+  const [place] = usePlace();
+  const [ads, setAds] = useState([]);
+  const [adForm, setAdForm] = useState(false);
+  const seenAds = useRef(new Set());
+  useEffect(() => {
+    supabase.from('ads').select('*').eq('status', 'active').gt('active_until', new Date().toISOString()).limit(30).then(({ data }) => {
+      const mine = (data || []).filter((a) => (!a.country_code || a.country_code === place.cc) && (!a.city || (place.city && a.city.trim().toLowerCase() === place.city.trim().toLowerCase())));
+      setAds(mine.sort(() => Math.random() - 0.5));
+    });
+  }, [place.cc, place.city]);
+  // pets with an ad slot after every AD_EVERY pets
+  const data = useMemo(() => {
+    const out = []; let n = 0;
+    items.forEach((p, i) => { out.push(p); if ((i + 1) % AD_EVERY === 0) { out.push({ _ad: true, key: 'ad-' + i, ad: ads.length ? ads[n++ % ads.length] : null }); } });
+    return out;
+  }, [items, ads]);
+  const adEvent = (ad, kind) => { if (ad) supabase.rpc('ad_event', { p_id: ad.id, p_kind: kind }).then(() => {}, () => {}); };
 
   useEffect(() => { AsyncStorage.getItem('paws-sound').then((v) => { if (v === '0') setSound(false); }).catch(() => {}); }, []);
-  const onViewable = useRef(({ viewableItems }) => { const v = viewableItems.find((x) => x.isViewable); if (v) setActive(v.item.id); }).current;
+  const onViewable = useRef(({ viewableItems }) => {
+    const v = viewableItems.find((x) => x.isViewable); if (!v) return;
+    setActive(v.item._ad ? v.item.key : v.item.id);
+    const ad = v.item._ad && v.item.ad;
+    if (ad && !seenAds.current.has(v.item.key)) { seenAds.current.add(v.item.key); supabase.rpc('ad_event', { p_id: ad.id, p_kind: 'view' }).then(() => {}, () => {}); }
+  }).current;
   const viewCfg = useRef({ itemVisiblePercentThreshold: 60 }).current;
 
   // play the song of the photo on screen
@@ -423,6 +691,8 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
         const { data: mine } = await supabase.from('paws').select('pet_id').eq('user_id', uid).in('pet_id', ids);
         setLiked((prev) => { const n = new Set(reset ? [] : prev); (mine || []).forEach((m) => n.add(m.pet_id)); return n; });
       }
+      const aw = await loadAwards(ids);
+      rows = rows.map((r) => (aw[r.id] ? { ...r, _award: aw[r.id] } : r));
       setItems((prev) => (reset ? rows : [...prev, ...rows.filter((r) => !prev.some((p) => p.id === r.id))]));
       if (reset && rows[0]) setActive(rows[0].id);
       setEnd((data || []).length < PAGE);
@@ -455,8 +725,8 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
     <View style={{ flex: 1 }} onLayout={(e) => setH(e.nativeEvent.layout.height)}>
       {h > 0 && (
         <FlatList
-          data={items}
-          keyExtractor={(p) => p.id}
+          data={data}
+          keyExtractor={(p) => (p._ad ? p.key : p.id)}
           pagingEnabled
           showsVerticalScrollIndicator={false}
           snapToInterval={h}
@@ -467,7 +737,9 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
           windowSize={5}
           onViewableItemsChanged={onViewable}
           viewabilityConfig={viewCfg}
-          renderItem={({ item: p }) => (
+          renderItem={({ item: p }) => p._ad ? (
+            <AdSlide ad={p.ad} h={h} t={t} lang={lang} onCreate={() => setAdForm(true)} onClick={() => adEvent(p.ad, 'click')} />
+          ) : (
             <Slide p={p} h={h} t={t} lang={lang} playing={active === p.id && !paused} on={liked.has(p.id)} burst={burst === p.id} sound={sound}
               onTap={() => onTap(p)} onPaw={() => togglePaw(p)} onShare={() => setInviteP(p)}
               onReport={() => setReportP(p)} onContact={() => contactOwner(t, p)} onSound={toggleSound} />
@@ -489,6 +761,7 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
         ))}
       </ScrollView>
       <ReportSheet t={t} p={reportP} uid={uid} onClose={() => setReportP(null)} />
+      {adForm && <AdForm t={t} lang={lang} uid={uid} onClose={() => setAdForm(false)} />}
       <InviteSheet t={t} p={inviteP} uid={uid} onClose={() => setInviteP(null)} />
     </View>
   );
@@ -504,6 +777,7 @@ function Slide({ p, h, t, lang, playing, on, burst, sound, onTap, onPaw, onShare
       <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="contain" transition={200} />
       {!!p.video_path && playing && <LoopVideo uri={photoUrl(p.video_path)} style={StyleSheet.absoluteFill} />}
       <LinearGradient colors={['transparent', 'rgba(0,0,0,0.85)']} style={s.fade} pointerEvents="none" />
+      <AwardFrame award={p._award} t={t} lang={lang} />
       {burst && <View style={s.burst}><Feet size={130} /></View>}
       <View style={s.meta}>
         {p._featured && <View style={s.badgeFeat}><Text style={s.badgeFeatTxt}>{t('featured')}</Text></View>}
@@ -556,6 +830,8 @@ function PetView({ p, t, lang, uid, onClose }) {
   const [n, setN] = useState(p?.paws_count || 0);
   const [playing, setPlaying] = useState(false);
   const [inv, setInv] = useState(false);
+  const [award, setAward] = useState(p?._award || null);
+  useEffect(() => { if (p) loadAwards([p.id]).then((a) => setAward(a[p.id] || null)); }, [p]);
   useEffect(() => {
     if (!p) return;
     setN(p.paws_count || 0); setPlaying(false);
@@ -579,6 +855,7 @@ function PetView({ p, t, lang, uid, onClose }) {
           <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.35)' }]} />
           <Image source={{ uri: photoUrl(p.photo_path) }} style={StyleSheet.absoluteFill} contentFit="contain" transition={150} />
           {!!p.video_path && <LoopVideo uri={photoUrl(p.video_path)} style={StyleSheet.absoluteFill} />}
+          <AwardFrame award={award} t={t} lang={lang} top={14} />
           <Pressable onPress={onClose} style={s.closeX}><Text style={{ color: '#fff', fontSize: 20, fontWeight: '800' }}>✕</Text></Pressable>
         </View>
         <ScrollView style={{ flex: 1, backgroundColor: C.bg }} contentContainerStyle={{ padding: 18, paddingBottom: insets.bottom + 24 }}>
@@ -896,14 +1173,15 @@ function Post({ t, lang, uid, detector, onDone }) {
         const rs = [];
         for (const f of small) { const r = await detector.current.detect(f); if (!r.ok) throw new Error(r.error); rs.push(r); }
         const yes = rs.filter((r) => r.animal);
-        if (yes.length >= 2) {
+        if (rs.some((r) => r.frame)) result = { animal: false, fake: true };
+        else if (yes.length >= 2) {
           const best = yes.reduce((a, b) => (b.conf > a.conf ? b : a));
           result = { animal: true, conf: yes.reduce((a, r) => a + r.conf, 0) / yes.length, cls: best.cls, cat: catOfClass(best.cls) };
         } else result = { animal: false, conf: rs[1].conf, cls: rs[1].cls, cat: null };
       } else {
         const res = await detector.current.detect(small);
         if (!res.ok) throw new Error(res.error);
-        result = { animal: res.animal, conf: res.conf, cls: res.cls, cat: res.animal ? catOfClass(res.cls) : null };
+        result = res.frame ? { animal: false, fake: true } : { animal: res.animal, conf: res.conf, cls: res.cls, cat: res.animal ? catOfClass(res.cls) : null };
       }
       setCheck(result);
       if (result.animal) setCat(result.cat);
@@ -1002,7 +1280,9 @@ function Post({ t, lang, uid, detector, onDone }) {
           <Pressable onPress={() => runCheck(img.small)} style={s.pickBtn}><Text style={{ color: '#fff', fontWeight: '800' }}>↻</Text></Pressable></View>
         : check.animal
           ? <View style={[s.ai, s.aiOk]}><Text style={[s.aiTxt, { color: '#6BEBB4' }]}>✓ {t('ai_ok')}: {CATS.find((c) => c[0] === check.cat)?.[1]} {t('c_' + check.cat)}{'\n'}<Text style={s.aiSmall}>{Math.round(check.conf * 100)}% {t('ai_sure')}</Text></Text></View>
-          : <View style={[s.ai, s.aiNo]}><Text style={[s.aiTxt, { color: '#FF8FA8' }]}>✗ {t('ai_no')}{'\n'}<Text style={s.aiSmall}>{t('ai_no2')}</Text></Text></View>)}
+          : check.fake
+            ? <View style={[s.ai, s.aiNo]}><Text style={[s.aiTxt, { color: '#FF8FA8' }]}>✗ {t('fake_frame')}{'\n'}<Text style={s.aiSmall}>{t('fake_frame2')}</Text></Text></View>
+            : <View style={[s.ai, s.aiNo]}><Text style={[s.aiTxt, { color: '#FF8FA8' }]}>✗ {t('ai_no')}{'\n'}<Text style={s.aiSmall}>{t('ai_no2')}</Text></Text></View>)}
 
       <Label>{t('up_name')}</Label>
       <TextInput value={name} onChangeText={setName} maxLength={24} style={s.input} placeholderTextColor={C.mut} />
@@ -1056,8 +1336,10 @@ function Mine({ t, lang, uid, refreshKey, onPost, posted, clearPosted }) {
     try {
       const { data, error } = await selectPets((q) => q.eq('owner_id', uid).neq('status', 'removed').order('created_at', { ascending: false }));
       if (error) throw error;
-      setPets(data || []);
-      const ids = (data || []).map((p) => p.id);
+      const ids0 = (data || []).map((p) => p.id);
+      const aw = await loadAwards(ids0);
+      setPets((data || []).map((p) => (aw[p.id] ? { ...p, _award: aw[p.id] } : p)));
+      const ids = ids0;
       if (ids.length) { const { data: r } = await supabase.from('rewards').select('*').in('pet_id', ids); setRewards(r || []); }
     } catch (e) { setErr(t('err_net') + (e?.message ? '\n' + e.message : '')); }
   }, [uid, t]);
@@ -1092,6 +1374,7 @@ function Mine({ t, lang, uid, refreshKey, onPost, posted, clearPosted }) {
                 <Image source={{ uri: photoUrl(p.photo_path) }} style={s.myImg} contentFit="cover" transition={150} />
                 <View style={s.myPaws}><Feet size={16} /><Text style={s.giTxt}>{fmt(p.paws_count, lang)}</Text></View>
                 {!!p.video_path && <View style={s.vidBadge}><Text style={s.giTxt}>▶ 3s</Text></View>}
+                <AwardFrame award={p._award} t={t} lang={lang} top={10} />
                 {p.status === 'hidden' && <View style={s.giHidden}><Text style={s.giTxt}>{t('status_hidden')}</Text></View>}
               </Pressable>
               <View style={{ padding: 14 }}>
@@ -1112,6 +1395,7 @@ function Mine({ t, lang, uid, refreshKey, onPost, posted, clearPosted }) {
             </View>
           );
         })}
+        <MyAds t={t} lang={lang} uid={uid} refreshKey={refreshKey} />
         <Text style={[s.rowSub, { textAlign: 'center', marginTop: 24, opacity: 0.5 }]}>ID {uid.slice(0, 8)}</Text>
       </ScrollView>
       {edit && <EditPost t={t} lang={lang} p={edit} rewards={rewards.filter((r) => r.pet_id === edit.id)} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(); }} />}
@@ -1160,7 +1444,7 @@ function BoostSheet({ t, lang, p, onClose, onInvite }) {
               <Text style={s.rowName}>{t(k)}{best ? '  ' : ''}{best && <Text style={{ color: C.g2, fontSize: 12 }}>★ {t('p2b')}</Text>}</Text>
               <Text style={s.rowSub}>{t(k + 'a')}</Text>
             </View>
-            <Text style={[s.rowName, { fontSize: 16 }]}>{fmt(price, lang)} RSD</Text>
+            <Text style={[s.rowName, { fontSize: 16 }]}>{rsd(price, lang)} RSD</Text>
           </Pressable>
         ))}
         <Btn label={t('boost_pay')} onPress={() => setSoon(true)} style={{ marginTop: 8 }} />
@@ -1388,4 +1672,12 @@ const s = StyleSheet.create({
   radioIn: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.g1 },
   vidBadge: { position: 'absolute', right: 10, top: 10, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10 },
   fileBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16, backgroundColor: 'rgba(255,79,123,0.12)', borderWidth: 1, borderColor: 'rgba(255,79,123,0.35)', marginBottom: 12 },
+  awardBorder: { borderWidth: 5, borderColor: '#E9B84A' },
+  awardChipWrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
+  awardChip: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 18, maxWidth: '92%' },
+  awardTxt: { color: '#3a2500', fontWeight: '900', fontSize: 12.5, flexShrink: 1 },
+  awardOk: { width: 18, height: 18, borderRadius: 9, backgroundColor: '#2f9e6b', alignItems: 'center', justifyContent: 'center' },
+  adLabel: { color: C.g2, fontWeight: '900', letterSpacing: 1, fontSize: 12, marginBottom: 8, textTransform: 'uppercase' },
+  adTag: { position: 'absolute', top: 64, left: 16, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+  adTagTxt: { color: '#fff', fontSize: 11, fontWeight: '800', letterSpacing: 0.6, textTransform: 'uppercase' },
 });
