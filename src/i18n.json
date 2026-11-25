@@ -281,7 +281,15 @@
    "vid_wait2": "Duži od 3 s se ubrzava na tačno 3 sekunde",
    "vid_long": "Video može da traje najviše 10 sekundi. Skrati ga u galeriji pa probaj ponovo.",
    "vid_err": "Video nije mogao da se obradi. Probaj drugi video.",
-   "vid_sped": "⚡ Ubrzano {x}× · 3 s"
+   "vid_sped": "⚡ Ubrzano {x}× · 3 s",
+   "send": "Pošalji",
+   "send_h": "Pošalji {name} nekome",
+   "send_p": "Prijatelj može da pogleda i bez aplikacije Paws.",
+   "send_msg": "Vidi ovog ljubimca 😍 {name} na Paws",
+   "send_file": "Pošalji sliku",
+   "send_video": "Pošalji video",
+   "send_file_p": "Kao mim: stiže pravo u poruku, ne treba ništa da se instalira",
+   "send_link_p": "Ili pošalji link (otvara se u pregledaču, može da da šapu):"
   },
   "en": {
    "nav_how": "How it works",
@@ -564,7 +572,15 @@
    "vid_wait2": "Longer than 3 s is sped up to exactly 3 seconds",
    "vid_long": "A video can be at most 10 seconds long. Trim it in your gallery and try again.",
    "vid_err": "The video could not be processed. Try another video.",
-   "vid_sped": "⚡ Sped up {x}× · 3 s"
+   "vid_sped": "⚡ Sped up {x}× · 3 s",
+   "send": "Send",
+   "send_h": "Send {name} to someone",
+   "send_p": "Your friend can watch it without the Paws app.",
+   "send_msg": "Look at this pet 😍 {name} on Paws",
+   "send_file": "Send the photo",
+   "send_video": "Send the video",
+   "send_file_p": "Like a meme: it lands right in the chat, nothing to install",
+   "send_link_p": "Or send a link (opens in the browser, they can give a paw):"
   },
   "de": {
    "nav_how": "So funktioniert's",

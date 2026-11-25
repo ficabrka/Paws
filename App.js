@@ -14,7 +14,8 @@ import { decode } from 'base64-arraybuffer';
 import * as Clipboard from 'expo-clipboard';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { getThumbnailAsync } from 'expo-video-thumbnails';
-import { File as FsFile } from 'expo-file-system';
+import { File as FsFile, Paths } from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import { processVideo, videoSupported } from './modules/paws-video';
 import Detector from './src/Detector';
 import INTRO from './src/introFrames';
@@ -279,9 +280,21 @@ function Sheet({ visible, onClose, children }) {
 }
 
 /* ============================== invite friends ============================== */
-function InviteButtons({ t, p, onDone }) {
-  const msg = shareText(t, p);
+// Send the photo/video file itself (like a meme): the friend sees it in the chat, no app or link needed.
+async function shareMedia(p, t) {
+  const isVid = !!p.video_path;
+  const f = await FsFile.downloadFileAsync(photoUrl(isVid ? p.video_path : p.photo_path), new FsFile(Paths.cache, `paws-${String(p.name).replace(/[^\w-]+/g, '') || 'pet'}-${p.id.slice(0, 6)}.${isVid ? 'mp4' : 'jpg'}`), { idempotent: true });
+  await Sharing.shareAsync(f.uri, { mimeType: isVid ? 'video/mp4' : 'image/jpeg', dialogTitle: p.name });
+}
+function InviteButtons({ t, p, onDone, send }) {
+  const msg = send ? `${t('send_msg', { name: p.name })} ${shareLink(p, t)}` : shareText(t, p);
   const [copied, setCopied] = useState(false);
+  const [fileBusy, setFileBusy] = useState(false);
+  const sendFile = async () => {
+    setFileBusy(true);
+    try { await shareMedia(p, t); } catch (e) { Alert.alert('Paws', t('err_net')); }
+    setFileBusy(false);
+  };
   const open = async (url, fallback) => {
     try { await Linking.openURL(url); onDone && onDone(); } catch (e) { if (fallback) { try { await Linking.openURL(fallback); onDone && onDone(); return; } catch (e2) {} } Share.share({ message: msg }).catch(() => {}); }
   };
@@ -298,6 +311,15 @@ function InviteButtons({ t, p, onDone }) {
   ];
   return (
     <View>
+      <Pressable onPress={sendFile} disabled={fileBusy} style={({ pressed }) => [s.fileBtn, pressed && { opacity: 0.7 }]}>
+        {fileBusy ? <ActivityIndicator color="#fff" /> : <Text style={{ fontSize: 22 }}>{p.video_path ? '🎬' : '🖼️'}</Text>}
+        <View style={{ flex: 1 }}>
+          <Text style={s.rowName}>{p.video_path ? t('send_video') : t('send_file')}</Text>
+          <Text style={s.rowSub}>{t('send_file_p')}</Text>
+        </View>
+        <Text style={{ color: C.mut, fontSize: 18 }}>›</Text>
+      </Pressable>
+      <Text style={[s.rowSub, { marginBottom: 10 }]}>{t('send_link_p')}</Text>
       <View style={s.invGrid}>
         {items.map(([lb, col, ic, fn]) => (
           <Pressable key={lb} onPress={fn} style={({ pressed }) => [s.invItem, pressed && { opacity: 0.6 }]}>
@@ -310,16 +332,17 @@ function InviteButtons({ t, p, onDone }) {
     </View>
   );
 }
-function InviteSheet({ t, p, onClose, posted }) {
+function InviteSheet({ t, p, onClose, posted, uid }) {
+  const send = !!p && !!uid && p.owner_id !== uid; // someone else's pet: share it like a meme
   return (
     <Sheet visible={!!p} onClose={onClose}>
       {p && <>
         <View style={{ alignItems: 'center', marginTop: 4 }}>
           {posted ? <Elephant width={200} /> : <Image source={{ uri: photoUrl(p.photo_path) }} style={{ width: 84, height: 84, borderRadius: 20 }} contentFit="cover" />}
-          <Text style={[s.sheetH, { textAlign: 'center', marginTop: 14 }]}>{posted ? t('posted_h', { name: p.name }) : t('invite_h', { name: p.name })}</Text>
-          <Text style={[s.mutTxt, { marginTop: 6, marginBottom: 16 }]}>{t('invite_p')}</Text>
+          <Text style={[s.sheetH, { textAlign: 'center', marginTop: 14 }]}>{posted ? t('posted_h', { name: p.name }) : send ? t('send_h', { name: p.name }) : t('invite_h', { name: p.name })}</Text>
+          <Text style={[s.mutTxt, { marginTop: 6, marginBottom: 16 }]}>{send ? t('send_p') : t('invite_p')}</Text>
         </View>
-        <InviteButtons t={t} p={p} />
+        <InviteButtons t={t} p={p} send={send} />
       </>}
     </Sheet>
   );
@@ -466,7 +489,7 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
         ))}
       </ScrollView>
       <ReportSheet t={t} p={reportP} uid={uid} onClose={() => setReportP(null)} />
-      <InviteSheet t={t} p={inviteP} onClose={() => setInviteP(null)} />
+      <InviteSheet t={t} p={inviteP} uid={uid} onClose={() => setInviteP(null)} />
     </View>
   );
 }
@@ -509,7 +532,7 @@ function Slide({ p, h, t, lang, playing, on, burst, sound, onTap, onPaw, onShare
         </Pressable>
         <Pressable onPress={onShare} style={s.railBtn}>
           <View style={[s.railO, s.railOff]}><Text style={s.railIc}>↗</Text></View>
-          <Text style={s.railTxt}>{t('invite')}</Text>
+          <Text style={s.railTxt}>{t('send')}</Text>
         </Pressable>
         {!!p.contact_phone && (
           <Pressable onPress={onContact} style={s.railBtn}>
@@ -572,13 +595,13 @@ function PetView({ p, t, lang, uid, onClose }) {
               {on ? <LinearGradient colors={GRAD} style={[s.btn, s.btnRow]}><Feet size={24} /><Text style={s.btnTxt}>{fmt(n, lang)}</Text></LinearGradient>
                 : <View style={[s.btn, s.btnRow, s.btnSec]}><Feet size={24} /><Text style={s.btnTxt}>{t('give_paw')} · {fmt(n, lang)}</Text></View>}
             </Pressable>
-            <Btn label={'↗ ' + t('invite')} secondary onPress={() => setInv(true)} style={{ flex: 1 }} />
+            <Btn label={'↗ ' + (p.owner_id === uid ? t('invite') : t('send'))} secondary onPress={() => setInv(true)} style={{ flex: 1 }} />
           </View>
           {!!p.contact_phone && <Btn label={'📞 ' + t('contact_q')} onPress={() => contactOwner(t, p)} style={{ marginTop: 10 }} />}
           {!!p.credit && <Text style={[s.credit, { color: C.mut }]}>📷 {p.credit}</Text>}
         </ScrollView>
       </View>
-      <InviteSheet t={t} p={inv ? p : null} onClose={() => setInv(false)} />
+      <InviteSheet t={t} p={inv ? p : null} uid={uid} onClose={() => setInv(false)} />
     </Modal>
   );
 }
@@ -1364,4 +1387,5 @@ const s = StyleSheet.create({
   radio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: C.mut, alignItems: 'center', justifyContent: 'center' },
   radioIn: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.g1 },
   vidBadge: { position: 'absolute', right: 10, top: 10, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10 },
+  fileBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16, backgroundColor: 'rgba(255,79,123,0.12)', borderWidth: 1, borderColor: 'rgba(255,79,123,0.35)', marginBottom: 12 },
 });
