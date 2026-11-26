@@ -406,7 +406,21 @@ function AwardFrame({ award, t, lang, top = 64 }) {
 
 /* ============================== ADS in the feed ============================== */
 const rsd = (n, lang) => { try { return new Intl.NumberFormat(lang).format(n); } catch (e) { return String(n); } };
-const AD_EVERY = 6; // one ad after every 6 pets
+// Ads are rare: 1 to 3 per day per phone (picked at random each day), at least 2 hours apart,
+// at a random spot between the 8th and 20th pet of a scroll session.
+const AD_GAP_MS = 2 * 60 * 60 * 1000;
+const todayKey = () => new Date().toISOString().slice(0, 10);
+async function adAllowance() {
+  let st = null;
+  try { st = JSON.parse((await AsyncStorage.getItem('paws-ads')) || 'null'); } catch (e) {}
+  if (!st || st.day !== todayKey()) st = { day: todayKey(), cap: 1 + Math.floor(Math.random() * 3), shown: 0, last: st?.last || 0 };
+  return st;
+}
+async function adShown() {
+  const st = await adAllowance();
+  st.shown += 1; st.last = Date.now();
+  AsyncStorage.setItem('paws-ads', JSON.stringify(st)).catch(() => {});
+}
 const AD_PLANS = [['7d', 7, 1500, 3000], ['30d', 30, 4900, 9900], ['90d', 90, 11900, 23900]]; // RSD: city, whole country
 const PAY_TERMS = ['standard', 'invoice', 'installments', 'shelter', 'custom'];
 
@@ -648,12 +662,18 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
       setAds(mine.sort(() => Math.random() - 0.5));
     });
   }, [place.cc, place.city]);
-  // pets with an ad slot after every AD_EVERY pets
+  // at most one ad in this scroll session, only if today's allowance and the 2-hour gap allow it
+  const [adPos, setAdPos] = useState(null);
+  useEffect(() => {
+    adAllowance().then((st) => {
+      if (st.shown < st.cap && Date.now() - (st.last || 0) > AD_GAP_MS) setAdPos(8 + Math.floor(Math.random() * 13));
+      else setAdPos(null);
+    });
+  }, [refreshKey, cat]);
   const data = useMemo(() => {
-    const out = []; let n = 0;
-    items.forEach((p, i) => { out.push(p); if ((i + 1) % AD_EVERY === 0) { out.push({ _ad: true, key: 'ad-' + i, ad: ads.length ? ads[n++ % ads.length] : null }); } });
-    return out;
-  }, [items, ads]);
+    if (adPos == null || items.length <= adPos) return items;
+    return [...items.slice(0, adPos), { _ad: true, key: 'ad-' + adPos, ad: ads.length ? ads[Math.floor(Math.random() * ads.length)] : null }, ...items.slice(adPos)];
+  }, [items, ads, adPos]);
   const adEvent = (ad, kind) => { if (ad) supabase.rpc('ad_event', { p_id: ad.id, p_kind: kind }).then(() => {}, () => {}); };
 
   useEffect(() => { AsyncStorage.getItem('paws-sound').then((v) => { if (v === '0') setSound(false); }).catch(() => {}); }, []);
@@ -661,7 +681,10 @@ function Feed({ t, lang, uid, refreshKey, paused }) {
     const v = viewableItems.find((x) => x.isViewable); if (!v) return;
     setActive(v.item._ad ? v.item.key : v.item.id);
     const ad = v.item._ad && v.item.ad;
-    if (ad && !seenAds.current.has(v.item.key)) { seenAds.current.add(v.item.key); supabase.rpc('ad_event', { p_id: ad.id, p_kind: 'view' }).then(() => {}, () => {}); }
+    if (v.item._ad && !seenAds.current.has(v.item.key)) {
+      seenAds.current.add(v.item.key); adShown();
+      if (ad) supabase.rpc('ad_event', { p_id: ad.id, p_kind: 'view' }).then(() => {}, () => {});
+    }
   }).current;
   const viewCfg = useRef({ itemVisiblePercentThreshold: 60 }).current;
 
